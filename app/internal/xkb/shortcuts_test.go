@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: Unlicense OR MIT
+//go:build (linux && !android) || freebsd || openbsd
+
+package xkb
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"gioui.org/io/key"
+)
+
+func TestNonLatinShortcuts(t *testing.T) {
+	for _, layout := range []string{"us+ru:2+ua:3", "ru"} {
+		t.Run(layout, func(t *testing.T) {
+			x, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer x.Destroy()
+			// Exercise the same keymap-loading and dispatch path as the window backend,
+			// not manually constructed key.Event values that bypass XKB conversion.
+			keymap := fmt.Sprintf(`xkb_keymap {
+ xkb_keycodes { include "evdev+aliases(qwerty)" };
+ xkb_types { include "complete" };
+ xkb_compatibility { include "complete" };
+ xkb_symbols { include "pc+%s" };
+};`, layout) + "\x00"
+			path := filepath.Join(t.TempDir(), "keymap")
+			if err := os.WriteFile(path, []byte(keymap), 0600); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			if err := x.LoadKeymap(1, int(f.Fd()), len(keymap)); err != nil {
+				t.Fatal(err)
+			}
+			groups := 3
+			if layout == "ru" {
+				groups = 1
+			}
+			for group := 0; group < groups; group++ {
+				for _, k := range []struct {
+					code uint32
+					name key.Name
+				}{{38, "A"}, {54, "C"}} {
+					x.UpdateMask(1<<2, 0, 0, 0, 0, uint32(group)) // Control, then selected layout.
+					events := x.DispatchKey(k.code, key.Press)
+					found := false
+					for _, e := range events {
+						if e, ok := e.(key.Event); ok {
+							found = e.Name == k.name && e.Modifiers.Contain(key.ModCtrl)
+						}
+						if _, ok := e.(key.EditEvent); ok {
+							t.Fatal("shortcut inserted text")
+						}
+					}
+					if !found {
+						t.Fatalf("group %d key %d: %+v", group, k.code, events)
+					}
+				}
+			}
+			group := uint32(1)
+			if layout == "ru" {
+				group = 0
+			}
+			x.UpdateMask(0, 0, 0, 0, 0, group)
+			events := x.DispatchKey(54, key.Press)
+			var name key.Name
+			var text string
+			for _, e := range events {
+				switch e := e.(type) {
+				case key.Event:
+					name = e.Name
+				case key.EditEvent:
+					text = e.Text
+				}
+			}
+			if name != "С" || text != "с" {
+				t.Fatalf("ordinary Cyrillic input changed: name=%q text=%q", name, text)
+			}
+		})
+	}
+}
