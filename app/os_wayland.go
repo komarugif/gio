@@ -301,7 +301,7 @@ func newWLWindow(callbacks *callbacks, options []Option) error {
 	return nil
 }
 
-func (d *wlDisplay) writeClipboard(content []byte) error {
+func (d *wlDisplay) writeClipboard(mime string, content []byte) error {
 	s := d.seat
 	if s == nil {
 		return nil
@@ -318,8 +318,14 @@ func (d *wlDisplay) writeClipboard(content []byte) error {
 	s.content = content
 	s.source = C.wl_data_device_manager_create_data_source(d.dataDeviceManager)
 	C.wl_data_source_add_listener(s.source, &C.gio_data_source_listener, unsafe.Pointer(s.seat))
-	for _, mime := range clipboardMimeTypes {
-		C.wl_data_source_offer(s.source, C.CString(mime))
+	offers := clipboardMimeTypes
+	if mime == "image/png" {
+		offers = []string{mime}
+	}
+	for _, mime := range offers {
+		cmime := C.CString(mime)
+		C.wl_data_source_offer(s.source, cmime)
+		C.free(unsafe.Pointer(cmime))
 	}
 	C.wl_data_device_set_selection(s.dataDev, s.source, s.serial)
 	return nil
@@ -1100,7 +1106,7 @@ func (w *window) ReadClipboard() {
 }
 
 func (w *window) WriteClipboard(mime string, s []byte) {
-	w.disp.writeClipboard(s)
+	w.disp.writeClipboard(mime, s)
 }
 
 func (w *window) Configure(options []Option) {
@@ -1668,7 +1674,17 @@ func gio_onDataSourceSend(data unsafe.Pointer, source *C.struct_wl_data_source, 
 	content := s.content
 	go func() {
 		defer syscall.Close(int(fd))
-		syscall.Write(int(fd), content)
+		// A pipe takes a picture in parts.
+		for len(content) > 0 {
+			n, err := syscall.Write(int(fd), content)
+			if err == syscall.EINTR {
+				continue
+			}
+			if err != nil || n <= 0 {
+				return
+			}
+			content = content[n:]
+		}
 	}()
 }
 

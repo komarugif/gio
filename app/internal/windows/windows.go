@@ -399,6 +399,7 @@ const (
 	GHND = 0x0042
 
 	CF_UNICODETEXT = 13
+	CF_DIB         = 8
 	IMAGE_BITMAP   = 0
 	IMAGE_ICON     = 1
 	IMAGE_CURSOR   = 2
@@ -469,6 +470,7 @@ var (
 	_SetCapture                  = user32.NewProc("SetCapture")
 	_SetCursor                   = user32.NewProc("SetCursor")
 	_SetClipboardData            = user32.NewProc("SetClipboardData")
+	_RegisterClipboardFormat     = user32.NewProc("RegisterClipboardFormatW")
 	_SetForegroundWindow         = user32.NewProc("SetForegroundWindow")
 	_SetFocus                    = user32.NewProc("SetFocus")
 	_SetProcessDPIAware          = user32.NewProc("SetProcessDPIAware")
@@ -939,6 +941,19 @@ func SetProcessDPIAware() {
 func SetCapture(hwnd syscall.Handle) syscall.Handle {
 	r, _, _ := _SetCapture.Call(uintptr(hwnd))
 	return syscall.Handle(r)
+}
+
+// RegisterClipboardFormat returns the clipboard format named name.
+func RegisterClipboardFormat(name string) (uint32, error) {
+	u16, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, err
+	}
+	r, _, err := _RegisterClipboardFormat.Call(uintptr(unsafe.Pointer(u16)))
+	if r == 0 {
+		return 0, fmt.Errorf("RegisterClipboardFormat: %v", err)
+	}
+	return uint32(r), nil
 }
 
 func SetClipboardData(format uint32, mem syscall.Handle) error {

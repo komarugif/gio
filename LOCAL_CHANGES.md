@@ -133,3 +133,18 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
 
 Run the focused check from the project root:
 `go test gioui.org/app/internal/xkb -run TestNonLatinShortcuts`.
+
+- Pictures on the clipboard, for the messenger's message shots:
+  `clipboard.WriteCmd{Type: "image/png"}` puts a PNG there instead of text.
+  - `app/os_x11.go`: the window offers `TARGETS` and `image/png` while it owns
+    a picture, and sends it for `image/png`; text targets are refused then.
+    The PNG goes in one property: without INCR, a picture larger than the
+    server's maximum request (BIG-REQUESTS makes it tens of megabytes) fails.
+  - `app/os_wayland.go`: the data source offers `image/png` alone for a
+    picture. It is written to the requestor's pipe in parts until all of it
+    went, as a pipe takes only so much at once (text went in one write, which
+    could be cut short too). The mime strings offered are freed.
+  - `app/os_windows.go`, `app/internal/windows`: a picture goes on the
+    clipboard in the registered "PNG" format, which keeps its alpha, and as a
+    `CF_DIB` (`app/clipboard_image.go`, bottom-up BGRA) for other programs.
+  - macOS, iOS, Android and js still take text only.

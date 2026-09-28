@@ -923,7 +923,52 @@ func (w *window) Configure(options []Option) {
 }
 
 func (w *window) WriteClipboard(mime string, s []byte) {
+	if mime == "image/png" {
+		w.writeClipboardImage(s)
+		return
+	}
 	w.writeClipboard(string(s))
+}
+
+// writeClipboardImage puts a PNG on the clipboard as itself, in the
+// registered "PNG" format that browsers and editors read with its alpha,
+// and as a device-independent bitmap for the others.
+func (w *window) writeClipboardImage(png []byte) error {
+	if err := windows.OpenClipboard(w.hwnd); err != nil {
+		return err
+	}
+	defer windows.CloseClipboard()
+	if err := windows.EmptyClipboard(); err != nil {
+		return err
+	}
+	put := func(format uint32, data []byte) error {
+		mem, err := windows.GlobalAlloc(len(data))
+		if err != nil {
+			return err
+		}
+		ptr, err := windows.GlobalLock(mem)
+		if err != nil {
+			windows.GlobalFree(mem)
+			return err
+		}
+		copy(unsafe.Slice((*byte)(ptr), len(data)), data)
+		windows.GlobalUnlock(mem)
+		if err := windows.SetClipboardData(format, mem); err != nil {
+			windows.GlobalFree(mem)
+			return err
+		}
+		return nil
+	}
+	if format, err := windows.RegisterClipboardFormat("PNG"); err == nil {
+		if err := put(format, png); err != nil {
+			return err
+		}
+	}
+	dib, err := pngToDIB(png)
+	if err != nil {
+		return err
+	}
+	return put(windows.CF_DIB, dib)
 }
 
 func (w *window) writeClipboard(s string) error {

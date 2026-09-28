@@ -69,6 +69,8 @@ type x11Window struct {
 		plaintext C.Atom
 		// "TARGETS"
 		targets C.Atom
+		// "image/png"
+		imagePNG C.Atom
 		// "CLIPBOARD".
 		clipboard C.Atom
 		// "PRIMARY".
@@ -106,6 +108,8 @@ type x11Window struct {
 
 	clipboard struct {
 		content []byte
+		// mime is the type of content: "image/png", or text.
+		mime string
 	}
 	cursor pointer.Cursor
 	config Config
@@ -157,6 +161,7 @@ func (w *x11Window) ReadClipboard() {
 
 func (w *x11Window) WriteClipboard(mime string, s []byte) {
 	w.clipboard.content = s
+	w.clipboard.mime = mime
 	C.XSetSelectionOwner(w.x, w.atoms.clipboard, w.xw, C.CurrentTime)
 	C.XSetSelectionOwner(w.x, w.atoms.primary, w.xw, C.CurrentTime)
 }
@@ -739,20 +744,37 @@ func (h *x11EventHandler) handleEvents() bool {
 			case w.atoms.targets:
 				// The requestor wants the supported clipboard
 				// formats. First write the targets...
-				formats := [...]C.long{
+				formats := []C.long{
 					C.long(w.atoms.targets),
 					C.long(w.atoms.utf8string),
 					C.long(w.atoms.plaintext),
 					// GTK clients need this.
 					C.long(w.atoms.gtk_text_buffer_contents),
 				}
+				if w.clipboard.mime == "image/png" {
+					formats = []C.long{C.long(w.atoms.targets), C.long(w.atoms.imagePNG)}
+				}
 				C.XChangeProperty(w.x, cevt.requestor, cevt.property, w.atoms.atom,
 					32 /* bitwidth of formats */, C.PropModeReplace,
-					(*C.uchar)(unsafe.Pointer(&formats)), C.int(len(formats)),
+					(*C.uchar)(unsafe.Pointer(unsafe.SliceData(formats))), C.int(len(formats)),
 				)
 				// ...then notify the requestor.
 				notify()
+			case w.atoms.imagePNG:
+				if w.clipboard.mime != "image/png" {
+					break
+				}
+				content := w.clipboard.content
+				ptr := (*C.uchar)(unsafe.Pointer(unsafe.SliceData(content)))
+				C.XChangeProperty(w.x, cevt.requestor, cevt.property, cevt.target,
+					8 /* bitwidth */, C.PropModeReplace,
+					ptr, C.int(len(content)),
+				)
+				notify()
 			case w.atoms.plaintext, w.atoms.utf8string, w.atoms.gtk_text_buffer_contents:
+				if w.clipboard.mime == "image/png" {
+					break
+				}
 				content := w.clipboard.content
 				ptr := (*C.uchar)(unsafe.Pointer(unsafe.SliceData(content)))
 				C.XChangeProperty(w.x, cevt.requestor, cevt.property, cevt.target,
@@ -865,6 +887,7 @@ func newX11Window(gioWin *callbacks, options []Option) error {
 	w.atoms.clipboardContent = w.atom("CLIPBOARD_CONTENT", false)
 	w.atoms.atom = w.atom("ATOM", false)
 	w.atoms.targets = w.atom("TARGETS", false)
+	w.atoms.imagePNG = w.atom("image/png", false)
 	w.atoms.wmName = w.atom("_NET_WM_NAME", false)
 	w.atoms.wmState = w.atom("_NET_WM_STATE", false)
 	w.atoms.wmStateFullscreen = w.atom("_NET_WM_STATE_FULLSCREEN", false)
