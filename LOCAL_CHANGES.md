@@ -11,6 +11,11 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
   X11 and Wayland and also benefits Gio's built-in editors/selectables.
 - `app/internal/xkb/shortcuts_test.go`: one focused test loads actual XKB maps for
   US/Russian/Ukrainian and Russian-only input, checks Ctrl+A/C and normal typing.
+- `app/internal/xkb/xkb_unix.go` (`UpdateModifiers`), `app/os_wayland.go`: the layout
+  Wayland tells (`wl_keyboard.modifiers`) is given to xkbcommon as the locked one
+  only. It was given as the depressed, the latched and the locked at once, which
+  xkbcommon adds up: with three layouts, every one but the first was the first.
+  `TestWaylandLayoutGroups` types with three layouts.
 
 - Transparent windows (`app.Transparent`, `app.BlurBehind`, `Config.Transparent`,
   `Config.BlurBehind`), for the messenger's photo viewer window:
