@@ -56,6 +56,13 @@ type window struct {
 	// frameDims stores the last seen window frame width and height.
 	frameDims image.Point
 	loop      *eventLoop
+
+	// blurWanted is the BlurBehind option; config.BlurBehind is what was
+	// granted.
+	blurWanted bool
+	// accent is set once the window has an accent policy, which is then to
+	// be taken off it.
+	accent bool
 }
 
 const _WM_WAKEUP = windows.WM_USER + iota
@@ -369,8 +376,16 @@ func windowProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uintptr
 		}
 		// lParam contains an NCCALCSIZE_PARAMS for us to adjust.
 		place := windows.GetWindowPlacement(w.hwnd)
-		if !place.IsMaximized() {
-			// Nothing do adjust.
+		// A fullscreen window is maximized too, and is all of its screen,
+		// not of the work area.
+		fullscreen := windows.GetWindowLong(w.hwnd, windows.GWL_STYLE)&windows.WS_OVERLAPPEDWINDOW == 0
+		if !place.IsMaximized() || fullscreen {
+			if w.config.BlurBehind {
+				// With a client area that is all of the window, acrylic is
+				// drawn over the content instead of behind it.
+				szp := (*windows.NCCalcSizeParams)(unsafe.Pointer(lParam))
+				szp.Rgrc[0].Bottom--
+			}
 			return 0
 		}
 		// Adjust window position to avoid the extra padding in maximized
@@ -839,19 +854,39 @@ func (w *window) Configure(options []Option) {
 	metric := configForDPI(dpi)
 	prev := w.config
 	cnf := w.config
+	cnf.BlurBehind = w.blurWanted
 	cnf.apply(metric, options)
+	w.blurWanted = cnf.BlurBehind
 	w.config.Title = cnf.Title
 	w.config.Decorated = cnf.Decorated
 	w.config.MinSize = cnf.MinSize
 	w.config.MaxSize = cnf.MaxSize
 	windows.SetWindowText(w.hwnd, cnf.Title)
+	w.config.Transparent = cnf.Transparent
+	// Acrylic is drawn behind the content of a window without the system's
+	// frame, and around the one with it.
+	w.config.BlurBehind = cnf.Transparent && cnf.BlurBehind && !cnf.Decorated && windows.TransparencyEffects()
+	effects := w.config.Transparent != prev.Transparent || w.config.BlurBehind != prev.BlurBehind
 	if w.placed && cnf.Mode == prev.Mode && cnf.Size == prev.Size && cnf.Decorated == prev.Decorated &&
 		cnf.TopMost == prev.TopMost && cnf.MinSize == prev.MinSize && cnf.MaxSize == prev.MaxSize {
-		// Nothing but the title changed. Placing the window again would
-		// size it from config.Size, which update may not have set yet.
+		// Nothing but the title or the effects changed. Placing the window
+		// again would size it from config.Size, which update may not have
+		// set yet.
+		if effects {
+			w.applyEffects()
+			// The client area follows the blur: see WM_NCCALCSIZE.
+			windows.SetWindowPos(w.hwnd, 0, 0, 0, 0, 0, windows.SWP_NOMOVE|windows.SWP_NOSIZE|windows.SWP_NOZORDER|windows.SWP_FRAMECHANGED)
+			w.update()
+		}
 		return
 	}
 	w.placed = true
+	defer func() {
+		if effects || cnf.Decorated != prev.Decorated {
+			w.applyEffects()
+			w.update()
+		}
+	}()
 
 	style := windows.GetWindowLong(w.hwnd, windows.GWL_STYLE)
 	var showMode int32
@@ -900,8 +935,16 @@ func (w *window) Configure(options []Option) {
 			width = r.Right - r.Left
 			height = r.Bottom - r.Top
 		} else {
-			// Enable drop shadows when we draw decorations.
-			windows.DwmExtendFrameIntoClientArea(w.hwnd, windows.Margins{-1, -1, -1, -1})
+			if w.config.BlurBehind {
+				// The client area is a pixel shorter than the window: see
+				// WM_NCCALCSIZE.
+				height++
+			}
+			if !cnf.Transparent {
+				// Enable drop shadows when we draw decorations. The frame
+				// is opaque, and is left out of a transparent window.
+				windows.DwmExtendFrameIntoClientArea(w.hwnd, windows.Margins{-1, -1, -1, -1})
+			}
 		}
 
 	case Fullscreen:
@@ -920,6 +963,34 @@ func (w *window) Configure(options []Option) {
 	windows.SetWindowPos(w.hwnd, hwndAfter, x, y, width, height, swpStyle)
 	windows.SetWindowLong(w.hwnd, windows.GWL_STYLE, style)
 	windows.ShowWindow(w.hwnd, showMode)
+}
+
+// acrylicTint is the tint of the blur behind a window: next to none, for the
+// content to tint it with what it paints. Acrylic is not drawn with a tint
+// that is wholly transparent.
+const acrylicTint = 0x01000000
+
+// applyEffects makes the system show what is behind the window where its
+// content is not opaque, as config.Transparent and config.BlurBehind say:
+// blurred, with acrylic, or as it is. config.BlurBehind is cleared when the
+// system has no acrylic.
+func (w *window) applyEffects() {
+	if w.config.BlurBehind {
+		if err := windows.SetWindowAccent(w.hwnd, windows.AccentAcrylic, acrylicTint); err != nil {
+			w.config.BlurBehind = false
+		} else {
+			w.accent = true
+		}
+	}
+	if !w.config.BlurBehind && w.accent {
+		windows.SetWindowAccent(w.hwnd, windows.AccentDisabled, 0)
+		w.accent = false
+	}
+	// Acrylic takes the alpha of the content itself.
+	windows.DwmEnableTransparency(w.hwnd, w.config.Transparent && !w.config.BlurBehind)
+	if w.config.Transparent || w.config.Decorated {
+		windows.DwmExtendFrameIntoClientArea(w.hwnd, windows.Margins{})
+	}
 }
 
 func (w *window) WriteClipboard(mime string, s []byte) {
