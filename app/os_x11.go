@@ -114,6 +114,9 @@ type x11Window struct {
 	cursor pointer.Cursor
 	config Config
 
+	// dnd is the drag of files over the window.
+	dnd x11Drag
+
 	wakeups chan struct{}
 	handler x11EventHandler
 	buf     [100]byte
@@ -697,6 +700,10 @@ func (h *x11EventHandler) handleEvents() bool {
 			// redraw will be done by a later expose event
 		case C.SelectionNotify:
 			cevt := (*C.XSelectionEvent)(unsafe.Pointer(xev))
+			if cevt.selection == w.dnd.atoms.selection {
+				w.dropSelection(cevt)
+				break
+			}
 			prop := w.atoms.clipboardContent
 			if cevt.property != prop {
 				break
@@ -785,6 +792,9 @@ func (h *x11EventHandler) handleEvents() bool {
 			}
 		case C.ClientMessage: // extensions
 			cevt := (*C.XClientMessageEvent)(unsafe.Pointer(xev))
+			if w.dropMessage(cevt) {
+				break
+			}
 			switch *(*C.long)(unsafe.Pointer(&cevt.data)) {
 			case C.long(w.atoms.evDelWindow):
 				w.shutdown(nil)
@@ -894,6 +904,7 @@ func newX11Window(gioWin *callbacks, options []Option) error {
 	w.atoms.wmActiveWindow = w.atom("_NET_ACTIVE_WINDOW", false)
 	w.atoms.wmStateMaximizedHorz = w.atom("_NET_WM_STATE_MAXIMIZED_HORZ", false)
 	w.atoms.wmStateMaximizedVert = w.atom("_NET_WM_STATE_MAXIMIZED_VERT", false)
+	w.setupDrop()
 
 	// extensions
 	C.XSetWMProtocols(dpy, win, &w.atoms.evDelWindow, 1)

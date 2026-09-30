@@ -127,6 +127,8 @@ type eventSummary struct {
 	frame        *frameEvent
 	framePending bool
 	destroy      *DestroyEvent
+	// drops wait in order; moves one after another are one.
+	drops []DropEvent
 }
 
 type callbacks struct {
@@ -605,6 +607,13 @@ func (w *Window) nextEvent() (event.Event, bool) {
 		e := *s.cfg
 		s.cfg = nil
 		return e, true
+	case len(s.drops) > 0:
+		e := s.drops[0]
+		s.drops = s.drops[1:]
+		if len(s.drops) == 0 {
+			s.drops = nil
+		}
+		return e, true
 	case s.frame != nil:
 		e := *s.frame
 		s.frame = nil
@@ -679,6 +688,19 @@ func (w *Window) processEvent(e event.Event) bool {
 			w.ctx.Unlock()
 		}
 		w.coalesced.view = &e2
+	case DropEvent:
+		// What is drawn is moved by the fallback decorations.
+		off := w.lastFrame.off
+		e2.Position = e2.Position.Sub(f32.Pt(float32(off.X), float32(off.Y)))
+		d := w.coalesced.drops
+		if n := len(d); n > 0 && e2.Kind == DropMove && d[n-1].Kind == DropMove {
+			if e2.Paths == nil {
+				e2.Paths = d[n-1].Paths
+			}
+			d[n-1] = e2
+		} else {
+			w.coalesced.drops = append(d, e2)
+		}
 	case ConfigEvent:
 		w.decorations.Decorations.Maximized = e2.Config.Mode == Maximized
 		wasSuspended := w.decorations.Config.Suspended || w.decorations.Config.Mode == Minimized

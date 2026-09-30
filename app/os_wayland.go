@@ -153,6 +153,8 @@ type wlSeat struct {
 	source *C.struct_wl_data_source
 	// content is the data belonging to source.
 	content []byte
+	// drag is the drag of files over a window.
+	drag wlDrag
 }
 
 type repeatState struct {
@@ -235,6 +237,8 @@ type window struct {
 	inCompositor bool        // window is moving or being resized
 
 	clipReads chan transfer.DataEvent
+	// dropReads bring the files of drags over the window.
+	dropReads chan wlDropRead
 
 	wakeups chan struct{}
 
@@ -380,6 +384,7 @@ func (d *wlDisplay) createNativeWindow(options []Option) (*window, error) {
 		ppsp:      ppdp,
 		wakeups:   make(chan struct{}, 1),
 		clipReads: make(chan transfer.DataEvent, 1),
+		dropReads: make(chan wlDropRead, 4),
 	}
 	w.surf = C.wl_compositor_create_surface(d.compositor)
 	if w.surf == nil {
@@ -496,7 +501,7 @@ func gio_onSeatCapabilities(data unsafe.Pointer, seat *C.struct_wl_seat, caps C.
 // content.
 func (s *wlSeat) flushOffers() {
 	for o := range s.offers {
-		if o == s.clipboard {
+		if o == s.clipboard || o == s.drag.offer {
 			continue
 		}
 		// We're only interested in clipboard offers.
@@ -785,19 +790,23 @@ func gio_onDataDeviceOffer(data unsafe.Pointer, dataDev *C.struct_wl_data_device
 func gio_onDataDeviceEnter(data unsafe.Pointer, dataDev *C.struct_wl_data_device, serial C.uint32_t, surf *C.struct_wl_surface, x, y C.wl_fixed_t, id *C.struct_wl_data_offer) {
 	s := callbackLoad(data).(*wlSeat)
 	s.serial = serial
+	s.dropEnter(serial, surf, x, y, id)
 	s.flushOffers()
 }
 
 //export gio_onDataDeviceLeave
 func gio_onDataDeviceLeave(data unsafe.Pointer, dataDev *C.struct_wl_data_device) {
+	callbackLoad(data).(*wlSeat).dropLeave()
 }
 
 //export gio_onDataDeviceMotion
 func gio_onDataDeviceMotion(data unsafe.Pointer, dataDev *C.struct_wl_data_device, t C.uint32_t, x, y C.wl_fixed_t) {
+	callbackLoad(data).(*wlSeat).dropMotion(x, y)
 }
 
 //export gio_onDataDeviceDrop
 func gio_onDataDeviceDrop(data unsafe.Pointer, dataDev *C.struct_wl_data_device) {
+	callbackLoad(data).(*wlSeat).dropDrop()
 }
 
 //export gio_onDataDeviceSelection
@@ -1465,6 +1474,10 @@ func (w *window) dispatch() {
 	case e := <-w.clipReads:
 		w.disp.readClipClose = nil
 		w.ProcessEvent(e)
+	case r := <-w.dropReads:
+		if s := w.disp.seat; s != nil {
+			s.dropRead(r)
+		}
 	case <-w.wakeups:
 		w.w.Invalidate()
 	default:
@@ -1587,6 +1600,9 @@ func (d *wlDisplay) wakeup() {
 }
 
 func (w *window) destroy() {
+	if w.disp != nil && w.disp.seat != nil {
+		w.disp.seat.dropWindowGone(w)
+	}
 	if w.lastFrameCallback != nil {
 		C.wl_callback_destroy(w.lastFrameCallback)
 		w.lastFrameCallback = nil

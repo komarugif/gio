@@ -66,6 +66,8 @@ type window struct {
 	// unseen are the borders the system's frame had around what was seen of
 	// the window when it last had that frame; zero before.
 	unseen windows.Rect
+	// drop takes the files dragged over the window; nil if it cannot.
+	drop *dropTarget
 }
 
 const _WM_WAKEUP = windows.WM_USER + iota
@@ -127,6 +129,7 @@ func newWindow(win *callbacks, options []Option) {
 		w.ProcessEvent(Win32ViewEvent{HWND: uintptr(w.hwnd)})
 		windows.SetForegroundWindow(w.hwnd)
 		windows.SetFocus(w.hwnd)
+		w.registerDropTarget()
 		// Since the window class for the cursor is null,
 		// set it here to show the cursor.
 		w.SetCursor(pointer.CursorDefault)
@@ -357,6 +360,7 @@ func windowProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uintptr
 	case windows.WM_POINTERHWHEEL:
 		w.scrollEvent(wParam, lParam, true, getModifiers())
 	case windows.WM_DESTROY:
+		w.revokeDropTarget()
 		w.ProcessEvent(Win32ViewEvent{})
 		w.ProcessEvent(DestroyEvent{})
 		w.w = nil

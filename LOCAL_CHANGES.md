@@ -248,3 +248,40 @@ Run the focused check from the project root:
     clipboard in the registered "PNG" format, which keeps its alpha, and as a
     `CF_DIB` (`app/clipboard_image.go`, bottom-up BGRA) for other programs.
   - macOS, iOS, Android and js still take text only.
+
+- Files dragged from other programs (`app/drop.go`, `DropEvent`), for the
+  messenger's areas that files are dropped on over a chat. A drag over a
+  window is told with `DropEnter`, `DropMove` and then `DropLeave` or `Drop`,
+  the position in pixels of what the program draws, and the local files as
+  soon as they are known. Only drags of files are told of; the window takes
+  them as a copy.
+  - `app/window.go`: the events wait in order among the window's others,
+    after a `ConfigEvent`; a move after a move replaces it, keeping the files
+    it told. The fallback decorations are taken off the position.
+  - `app/os_windows_drop.go`: an OLE `IDropTarget`, a COM object whose
+    methods are `syscall.NewCallback`s, registered for the window after
+    `OleInitialize` on its thread and revoked on `WM_DESTROY`. The files are
+    the `CF_HDROP` of the data object, which Windows gives with `DragEnter`.
+    OLE asks `DragOver` again and again while the pointer stays; a point
+    that did not change is not told. On 64-bit Windows the POINTL the
+    methods take by value is one argument of a callback; 32-bit Windows
+    would split it, and gets no drop target (`os_windows_nodrop.go`).
+  - `app/os_x11_drop.go`: XDND version 5 as a target: `XdndAware` on the
+    window, a status answered to each position, the files read by converting
+    `XdndSelection` to `text/uri-list` at the first position (with its time),
+    so that they are known before the drop; a drop that comes first waits
+    for them, then `XdndFinished`. More than three types are read from
+    `XdndTypeList`.
+  - `app/os_wayland_drop.go`, `app/os_wayland.go`: the data device's enter,
+    motion, leave and drop, which did nothing. An offer with `text/uri-list`
+    is kept while it is over a window (`flushOffers` spared it), accepted as a
+    copy, and read at once in the background, the result coming back through
+    the window's event loop like the clipboard's; a drop that comes first
+    waits for it, then `wl_data_offer_finish`. A leave after such a drop does
+    not end it.
+  - `uriListPaths` reads `file://` URIs of this machine (none, `localhost` or
+    its name as the host). Tests: `TestURIListPaths`, `TestDropEventsQueue`.
+    Checked live on Windows 10 (19044), with a drag through OLE, and by the
+    maintainer on X11 and Wayland: the areas show as the drag comes over the
+    window and go when it leaves, and a picture dropped on the area of
+    photos goes as a photo.
