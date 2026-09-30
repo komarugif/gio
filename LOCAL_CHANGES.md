@@ -96,6 +96,12 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
     filtering, which composites 1:1 layers exactly as before. The downsampled
     images of a frame without blur layers are released. A render pass on an
     atlas page interrupted by a blur resumes with `LoadActionKeep`.
+  - `gpu/gpu.go`: every step of the blur is exactly two to one from the layer's
+    origin (an odd size reads a pixel past the edge, which the texture clamps),
+    not a stretch by a fraction of a pixel. The size of a layer that changes
+    each frame, as a menu's clip does while it opens, made the blurred image
+    swim, and the text under the menu flicker. Test in the messenger:
+    `TestBlurDoesNotSwimWithTheSizeOfItsClip`.
   - `gpu/gpu.go`: a full-screen opaque fill no longer drops earlier operations
     once there are layers, not only while one is open: layers index them.
   - `io/input/router.go`: operations inside a blur layer take no input and

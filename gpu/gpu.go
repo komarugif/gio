@@ -945,6 +945,11 @@ func (r *renderer) drawLayers(layers []opacityLayer, ops []imageOp) {
 // upsamples it back to half its size, each step sampling with linear
 // filtering: an approximation of a Gaussian blur of about radius. It returns
 // the material showing the area clip, relative to v, of the result.
+//
+// Every step is exactly two to one, from the origin of v: a size that is odd
+// grows by a pixel of what the texture clamps to, instead of stretching the
+// image by a fraction of a pixel. Otherwise the blurred image would swim as
+// the size of a layer changes, as that of a menu opening does.
 func (r *renderer) blur(set *fboSet, src FBO, v image.Rectangle, radius float32, clip image.Rectangle) material {
 	levels := max(1, min(6, int(math.Round(math.Log2(float64(radius))))))
 	sizes := make([]image.Point, levels)
@@ -955,19 +960,20 @@ func (r *renderer) blur(set *fboSet, src FBO, v image.Rectangle, radius float32,
 	}
 	set.filter = driver.FilterLinear
 	set.resize(r.ctx, driver.TextureFormatSRGBA, sizes)
-	from, area := src, v
+	from, origin := src, v.Min
 	for i := range sizes {
-		r.resample(from, area, set.fbos[i], sizes[i])
-		from, area = set.fbos[i], image.Rectangle{Max: sizes[i]}
+		area := image.Rectangle{Min: origin, Max: origin.Add(sizes[i].Mul(2))}
+		r.resample(from, f32.FRect(area), set.fbos[i], sizes[i])
+		from, origin = set.fbos[i], image.Point{}
 	}
 	for i := levels - 2; i >= 0; i-- {
-		r.resample(set.fbos[i+1], image.Rectangle{Max: sizes[i+1]}, set.fbos[i], sizes[i])
+		half := f32.Pt(float32(sizes[i].X)/2, float32(sizes[i].Y)/2)
+		r.resample(set.fbos[i+1], f32.Rectangle{Max: half}, set.fbos[i], sizes[i])
 	}
 	result := set.fbos[0]
-	scale := f32.Pt(float32(sizes[0].X)/float32(v.Dx()), float32(sizes[0].Y)/float32(v.Dy()))
 	uv := f32.Rectangle{
-		Min: f32.Pt(float32(clip.Min.X)*scale.X, float32(clip.Min.Y)*scale.Y),
-		Max: f32.Pt(float32(clip.Max.X)*scale.X, float32(clip.Max.Y)*scale.Y),
+		Min: f32.Pt(float32(clip.Min.X)/2, float32(clip.Min.Y)/2),
+		Max: f32.Pt(float32(clip.Max.X)/2, float32(clip.Max.Y)/2),
 	}
 	uvScale, uvOffset := texSpaceTransform(uv, result.size)
 	return material{
@@ -978,14 +984,14 @@ func (r *renderer) blur(set *fboSet, src FBO, v image.Rectangle, radius float32,
 	}
 }
 
-// resample draws the area of src scaled to the area of dst of size.
-func (r *renderer) resample(src FBO, area image.Rectangle, dst FBO, size image.Point) {
+// resample draws the area of src scaled to dst, which is of size.
+func (r *renderer) resample(src FBO, area f32.Rectangle, dst FBO, size image.Point) {
 	r.ctx.BeginRenderPass(dst.tex, driver.LoadDesc{Action: driver.LoadActionClear})
 	r.ctx.Viewport(0, 0, size.X, size.Y)
 	r.ctx.BindTexture(0, src.tex)
 	r.ctx.BindVertexBuffer(r.blitter.quadVerts, 0)
 	scale, off := clipSpaceTransform(image.Rectangle{Max: size}, size)
-	uvScale, uvOffset := texSpaceTransform(f32.FRect(area), src.size)
+	uvScale, uvOffset := texSpaceTransform(area, src.size)
 	uv := f32.AffineId().Scale(f32.Point{}, uvScale).Offset(uvOffset)
 	var none f32color.RGBA
 	r.blitter.blit(materialTexture, true, none, none, none, scale, off, 1, uv)
