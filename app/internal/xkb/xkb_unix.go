@@ -271,6 +271,15 @@ func (x *Context) UpdateMask(depressed, latched, locked, depressedGroup, latched
 		C.xkb_layout_index_t(depressedGroup), C.xkb_layout_index_t(latchedGroup), C.xkb_layout_index_t(lockedGroup))
 }
 
+// UpdateModifiers sets the modifiers and the layout as Wayland's
+// wl_keyboard.modifiers gives them: group is the layout in effect. xkbcommon
+// adds the depressed, the latched and the locked layouts up, so the layout is
+// given as the locked one only; given as all three, it would be a multiple of
+// itself, and with three layouts every one would be the first.
+func (x *Context) UpdateModifiers(depressed, latched, locked, group uint32) {
+	x.UpdateMask(depressed, latched, locked, 0, 0, group)
+}
+
 func convertKeysym(s C.xkb_keysym_t) (key.Name, bool) {
 	if 'a' <= s && s <= 'z' {
 		return key.Name(rune(s - 'a' + 'A')), true

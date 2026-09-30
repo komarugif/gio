@@ -1626,7 +1626,7 @@ func gio_onKeyboardModifiers(data unsafe.Pointer, keyboard *C.struct_wl_keyboard
 	if d.xkb == nil {
 		return
 	}
-	d.xkb.UpdateMask(uint32(depressed), uint32(latched), uint32(locked), uint32(group), uint32(group), uint32(group))
+	d.xkb.UpdateModifiers(uint32(depressed), uint32(latched), uint32(locked), uint32(group))
 }
 
 //export gio_onKeyboardRepeatInfo

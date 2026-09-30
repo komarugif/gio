@@ -87,3 +87,44 @@ func TestNonLatinShortcuts(t *testing.T) {
 		})
 	}
 }
+
+// With three layouts, each one types its own letters after a switch, as
+// Wayland tells the layout in effect.
+func TestWaylandLayoutGroups(t *testing.T) {
+	x, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Destroy()
+	keymap := `xkb_keymap {
+ xkb_keycodes { include "evdev+aliases(qwerty)" };
+ xkb_types { include "complete" };
+ xkb_compatibility { include "complete" };
+ xkb_symbols { include "pc+ru+ua:2+us:3" };
+};` + "\x00"
+	path := filepath.Join(t.TempDir(), "keymap")
+	if err := os.WriteFile(path, []byte(keymap), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := x.LoadKeymap(1, int(f.Fd()), len(keymap)); err != nil {
+		t.Fatal(err)
+	}
+	// The S key: ы in Russian, і in Ukrainian, s in English.
+	for group, want := range []string{"ы", "і", "s"} {
+		x.UpdateModifiers(0, 0, 0, uint32(group))
+		var text string
+		for _, e := range x.DispatchKey(39, key.Press) {
+			if e, ok := e.(key.EditEvent); ok {
+				text = e.Text
+			}
+		}
+		if text != want {
+			t.Errorf("layout %d types %q, want %q", group, text, want)
+		}
+	}
+}
