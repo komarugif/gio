@@ -47,7 +47,12 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
     it is opaque white on Windows 10, so such a window without decorations
     has no shadow unless it is blurred. The effects are applied in
     `Configure`, on the window's thread, with `SWP_FRAMECHANGED`; set from
-    another thread on a shown window they did not take. An undecorated
+    another thread on a shown window they did not take. When only the
+    decorations of a shown window change, what is seen of it stays where it
+    is (`reframed`): the rectangle of a decorated window has borders for
+    resizing around what is drawn, 7 pixels at the sides and below at 100%,
+    which `DWMWA_EXTENDED_FRAME_BOUNDS` leaves out; sized from the client
+    area, the window jumped and shrank by its frame. An undecorated
     fullscreen window is all of its screen: the work area was taken for it
     as for a maximized one.
   - The other drivers copy Config fields by name and do not copy these, so

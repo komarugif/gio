@@ -63,6 +63,9 @@ type window struct {
 	// accent is set once the window has an accent policy, which is then to
 	// be taken off it.
 	accent bool
+	// unseen are the borders the system's frame had around what was seen of
+	// the window when it last had that frame; zero before.
+	unseen windows.Rect
 }
 
 const _WM_WAKEUP = windows.WM_USER + iota
@@ -940,11 +943,25 @@ func (w *window) Configure(options []Option) {
 				// WM_NCCALCSIZE.
 				height++
 			}
+			if prev.Decorated && w.shown() {
+				seen := windows.DwmVisibleRect(w.hwnd)
+				w.unseen = windows.Rect{Left: seen.Left - wr.Left, Top: seen.Top - wr.Top, Right: wr.Right - seen.Right, Bottom: wr.Bottom - seen.Bottom}
+			}
 			if !cnf.Transparent {
 				// Enable drop shadows when we draw decorations. The frame
 				// is opaque, and is left out of a transparent window.
 				windows.DwmExtendFrameIntoClientArea(w.hwnd, windows.Margins{-1, -1, -1, -1})
 			}
+		}
+		if w.shown() && cnf.Decorated != prev.Decorated && cnf.Size == prev.Size && prev.Mode == Windowed {
+			// Only the frame changes: what is seen of the window stays where
+			// it is, and the content takes what the frame leaves of it.
+			unseen := w.unseen
+			if cnf.Decorated && unseen == (windows.Rect{}) {
+				unseen = unseenBorders(uint32(style))
+			}
+			r := reframed(windows.DwmVisibleRect(w.hwnd), cnf.Decorated, unseen)
+			x, y, width, height = r.Left, r.Top, r.Right-r.Left, r.Bottom-r.Top
 		}
 
 	case Fullscreen:
@@ -963,6 +980,32 @@ func (w *window) Configure(options []Option) {
 	windows.SetWindowPos(w.hwnd, hwndAfter, x, y, width, height, swpStyle)
 	windows.SetWindowLong(w.hwnd, windows.GWL_STYLE, style)
 	windows.ShowWindow(w.hwnd, showMode)
+}
+
+// shown reports whether the window was placed and is on the screen.
+func (w *window) shown() bool {
+	return w.placed && windows.IsWindowVisible(w.hwnd)
+}
+
+// unseenBorders are the borders that the system's frame of a window of the
+// style has around what is seen of it: the frame without its line of a pixel,
+// and nothing above the caption. It is for a window that never had that
+// frame to be measured.
+func unseenBorders(style uint32) windows.Rect {
+	var r windows.Rect
+	windows.AdjustWindowRectEx(&r, style, 0, dwExStyle)
+	return windows.Rect{Left: max(-r.Left-1, 0), Right: max(r.Right-1, 0), Bottom: max(r.Bottom-1, 0)}
+}
+
+// reframed returns the rectangle of a window whose frame changes, for what
+// is seen of it to stay where it is: seen is that, and unseen are the
+// borders the system's frame has around it. A window without that frame is
+// all seen.
+func reframed(seen windows.Rect, decorated bool, unseen windows.Rect) windows.Rect {
+	if !decorated {
+		return seen
+	}
+	return windows.Rect{Left: seen.Left - unseen.Left, Top: seen.Top - unseen.Top, Right: seen.Right + unseen.Right, Bottom: seen.Bottom + unseen.Bottom}
 }
 
 // acrylicTint is the tint of the blur behind a window: next to none, for the

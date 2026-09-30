@@ -97,3 +97,25 @@ func TransparencyEffects() bool {
 	v, _, err := k.GetIntegerValue("EnableTransparency")
 	return err != nil || v != 0
 }
+
+var _DwmGetWindowAttribute = dwmapi.NewProc("DwmGetWindowAttribute")
+
+const dwmwaExtendedFrameBounds = 9
+
+// DwmVisibleRect returns what is seen of a window: its rectangle without
+// the borders the system's frame has around it for resizing, which are not
+// drawn. It is the window's rectangle when the system does not say.
+func DwmVisibleRect(hwnd syscall.Handle) Rect {
+	var r Rect
+	if hr, _, _ := _DwmGetWindowAttribute.Call(uintptr(hwnd), dwmwaExtendedFrameBounds, uintptr(unsafe.Pointer(&r)), unsafe.Sizeof(r)); hr != 0 {
+		return GetWindowRect(hwnd)
+	}
+	return r
+}
+
+var _IsWindowVisible = user32.NewProc("IsWindowVisible")
+
+func IsWindowVisible(hwnd syscall.Handle) bool {
+	r, _, _ := _IsWindowVisible.Call(uintptr(hwnd))
+	return r != 0
+}
