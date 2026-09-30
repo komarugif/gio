@@ -150,11 +150,22 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
   palette, once into an image at the glyph's size in pixels
   (`golang.org/x/image/vector`), kept in the bitmap cache, and shows it where
   `Shape` draws outlines. Layers in the color of the text go to `Shape`'s
-  path. A COLR version 1 glyph (gradients, as in the Segoe UI Emoji of
-  Windows 11) is not drawn in color: `Shape` draws the glyph's own outline in
-  the color of the text, which fonts such as Noto-COLRv1 leave empty: the
-  messenger turns such a font down for emoji. Tests: `text` `TestColorGlyphImage`,
-  `TestColorGlyphBitmap`, skipped without a system font of such glyphs.
+  path. Tests: `text` `TestColorGlyphImage`, `TestColorGlyphBitmap`, skipped
+  without a system font of such glyphs.
+
+- COLR version 1 (`text/colrv1.go`): the tree of paints of a glyph
+  (Noto-COLRv1, Fluent Emoji, the Segoe UI Emoji of Windows 11) is drawn on
+  the CPU into the same image: outlines clip (`PaintGlyph`, nested ones
+  intersect), solid colors and linear, radial and sweep gradients fill, as
+  sources of `image/draw` that map a pixel back to the paint's font units,
+  the transforms multiply into the matrix under them, and `PaintComposite`
+  draws its two subtrees into layers and blends them: the Porter-Duff modes
+  and the separable blend modes; hue, saturation, color and luminosity are
+  drawn as source over. The image is as large as the glyph's clip box, or
+  as the outlines of the tree. Variable paints are drawn as their default
+  instance, the shaper setting no variation coordinates; the color of the
+  text (palette entry 0xFFFF) is black in a paint. Tests: `text`
+  `TestPaint…`, on outlines of their own, without a font.
 
 - Emoji in bold, italic and monospace text (`text/gotext.go`
   `shaperImpl.ResolveFace`): fontscan prunes the fonts that stand in for a
@@ -165,6 +176,19 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
   looked for again in the regular aspect with the `emoji` family added; the
   query is kept in `shaperImpl.query` to return to. Test: `text`
   `TestEmojiFaceInBoldAndMonospace`.
+
+- Emoji as pictures (`text/emojiimages.go`, `WithEmojiImages`): an
+  `EmojiImages` tells the emoji a text begins with and gives its picture at
+  a size, as a set of sprites does. `shapeText` cuts such emoji out of the
+  inputs before they are split by face, and lays each out as one glyph of a
+  face that stands for the pictures among the shaper's: a square of 18/16
+  of the text's size, 3/16 under the baseline, advancing 20/16 as the
+  emoji of fonts do; the glyph's number is the picture's and one more, 0
+  being the glyph of a missing character. `Bitmaps` draws the picture,
+  asked for once at the glyph's size in pixels and kept in the bitmap
+  cache. `EmojiPresentation` is exported for such a set to tell a lone ©
+  or digit from an emoji the way the shaper does. Tests: `text`
+  `TestEmojiImages…`.
 
 - An emoji font of the program's own (`text/shaper.go` `WithEmojiFamily`,
   `text/gotext.go`): the family named draws, before the typeface's fonts,

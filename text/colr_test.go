@@ -47,9 +47,9 @@ func layeredEmoji(t *testing.T) (*shaperImpl, *font.Face, font.GID, font.GlyphCo
 // TestColorGlyphImage checks that the layers of a color glyph are drawn in
 // their colors, inside the glyph's box.
 func TestColorGlyphImage(t *testing.T) {
-	_, face, _, glyph := layeredEmoji(t)
+	_, face, gid, glyph := layeredEmoji(t)
 	const ppem = 64
-	img, off, ok := colorGlyphImage(face, glyph, fixed.I(ppem))
+	img, off, ok := colorGlyphImage(face, gid, glyph, fixed.I(ppem))
 	if !ok {
 		t.Fatal("the glyph was not drawn")
 	}

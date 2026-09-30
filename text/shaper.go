@@ -218,6 +218,7 @@ type Shaper struct {
 		disableSystemFonts bool
 		collection         []FontFace
 		emojiFamily        string
+		emojiImages        EmojiImages
 	}
 	initialized      bool
 	shaper           shaperImpl
@@ -287,6 +288,7 @@ func (l *Shaper) init() {
 	l.reader = bufio.NewReader(nil)
 	l.shaper = *newShaperImpl(!l.config.disableSystemFonts, l.config.collection)
 	l.shaper.emojiFamily = l.config.emojiFamily
+	l.shaper.useEmojiImages(l.config.emojiImages)
 }
 
 // Layout text from an io.Reader according to a set of options. Results can be retrieved by

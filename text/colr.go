@@ -21,14 +21,13 @@ import (
 const foregroundIndex = 0xFFFF
 
 // colorGlyphOutline returns what Shape draws of a color glyph, in the color
-// of the text: the layers of a COLR version 0 glyph that ask for that color,
-// and the glyph's own outline when its paint is one colorGlyphImage does not
-// draw (COLR version 1), so that it shows in one color instead of not at all.
-func colorGlyphOutline(face *font.Face, gid font.GID, glyph font.GlyphColor) font.GlyphOutline {
+// of the text: the layers of a COLR version 0 glyph that ask for that
+// color. A COLR version 1 glyph is all in its image: its own outline, when
+// it has one, is what a renderer without color would draw.
+func colorGlyphOutline(face *font.Face, glyph font.GlyphColor) font.GlyphOutline {
 	layers, ok := glyph.Paint.(tables.PaintColrLayersResolved)
 	if !ok {
-		outline, _ := face.GlyphDataOutline(tables.GlyphID(gid))
-		return outline
+		return font.GlyphOutline{}
 	}
 	var outline font.GlyphOutline
 	for _, l := range layers {
@@ -42,19 +41,23 @@ func colorGlyphOutline(face *font.Face, gid font.GID, glyph font.GlyphColor) fon
 	return outline
 }
 
-// colorGlyphImage draws the layers of a COLR version 0 glyph, as Segoe UI
-// Emoji has them, at ppem pixels per em: each layer is the outline of a
-// glyph filled with a color of the font's first palette. The image's origin
-// is at off from the glyph's, in pixels with y down. Layers in the color of
-// the text are left to colorGlyphOutline. It reports false for other paints
-// and for a glyph with nothing to draw.
-func colorGlyphImage(face *font.Face, glyph font.GlyphColor, ppem fixed.Int26_6) (img *image.RGBA, off image.Point, ok bool) {
+// colorGlyphImage draws a color glyph at ppem pixels per em. The image's
+// origin is at off from the glyph's, in pixels with y down. The layers of a
+// COLR version 0 glyph, as the Segoe UI Emoji of Windows 10 has them, are
+// each the outline of a glyph filled with a color of the font's first
+// palette; those in the color of the text are left to colorGlyphOutline.
+// The paints of version 1 are drawn by colorGlyphPaintImage. It reports
+// false for a glyph with nothing to draw.
+func colorGlyphImage(face *font.Face, gid font.GID, glyph font.GlyphColor, ppem fixed.Int26_6) (img *image.RGBA, off image.Point, ok bool) {
+	scale := fixedToFloat(ppem) / float32(face.Upem())
 	layers, isLayers := glyph.Paint.(tables.PaintColrLayersResolved)
-	if !isLayers || len(face.CPAL) == 0 {
+	if !isLayers {
+		return colorGlyphPaintImage(face, gid, glyph.Paint, float64(scale))
+	}
+	if len(face.CPAL) == 0 {
 		return nil, image.Point{}, false
 	}
 	palette := face.CPAL[0]
-	scale := fixedToFloat(ppem) / float32(face.Upem())
 
 	type layer struct {
 		outline font.GlyphOutline

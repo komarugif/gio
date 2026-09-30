@@ -208,14 +208,19 @@ type shaperImpl struct {
 	query fontscan.Query
 	// emojiFamily is the family that draws emoji before the query's fonts
 	// do, "" for none; ownEmoji is its face, once looked for.
-	emojiFamily  string
-	ownEmoji     *font.Face
-	ownEmojiSet  bool
-	faces        []*font.Face
-	faceToIndex  map[*font.Font]int
-	faceMeta     []giofont.Font
-	defaultFaces []string
-	logger       interface {
+	emojiFamily string
+	ownEmoji    *font.Face
+	ownEmojiSet bool
+	// emojiImages draws emoji as pictures, nil for none; imageFace stands
+	// for them among the faces, at imageFaceIndex.
+	emojiImages    EmojiImages
+	imageFace      *font.Face
+	imageFaceIndex int
+	faces          []*font.Face
+	faceToIndex    map[*font.Font]int
+	faceMeta       []giofont.Font
+	defaultFaces   []string
+	logger         interface {
 		Printf(format string, args ...any)
 	}
 	parser parser
@@ -430,6 +435,10 @@ func (s *shaperImpl) splitByFaces(inputs []shaping.Input, buf []shaping.Input) [
 // that face has it. Otherwise ©️, ↩️ or the keycaps #️⃣ and 1️⃣ are shaped as
 // text, and their sequences fall apart.
 func (s *shaperImpl) splitByFace(input shaping.Input, buffer []shaping.Input) []shaping.Input {
+	if s.imageFace != nil && input.Face == s.imageFace {
+		// A picture, which no font draws.
+		return append(buffer, input)
+	}
 	current := input
 	for i := input.RunStart; i < input.RunEnd; i++ {
 		r := input.Text[i]
@@ -513,7 +522,11 @@ func (s *shaperImpl) ownEmojiFace() *font.Face {
 // whatever their presentation: Telegram sends the heart of a reaction as a
 // bare U+2764, and a text font that has it would draw it black. Digits, #
 // and * are not.
-func emojiPresentation(r rune) bool {
+func emojiPresentation(r rune) bool { return EmojiPresentation(r) }
+
+// EmojiPresentation reports whether r is drawn as an emoji on its own,
+// without U+FE0F after it, as the shaper takes it; see emojiPresentation.
+func EmojiPresentation(r rune) bool {
 	if (r >= 0x1F000 && r <= 0x1FAFF) || (r >= 0x2600 && r <= 0x27BF) {
 		return true
 	}
@@ -560,6 +573,7 @@ func (s *shaperImpl) shapeText(ppem fixed.Int26_6, lc system.Locale, txt []rune)
 	}
 	// Break input on font glyph coverage.
 	inputs := s.splitBidi(input)
+	inputs = s.splitByEmojiImages(inputs)
 	inputs = s.splitByFaces(inputs, s.splitScratch1[:0])
 	inputs = splitByScript(inputs, lcfg.Direction, s.splitScratch2[:0])
 	// Shape all inputs.
@@ -568,7 +582,9 @@ func (s *shaperImpl) shapeText(ppem fixed.Int26_6, lc system.Locale, txt []rune)
 	}
 	s.outScratchBuf = s.outScratchBuf[:0]
 	for _, input := range inputs {
-		if input.Face != nil {
+		if s.imageFace != nil && input.Face == s.imageFace {
+			s.outScratchBuf = append(s.outScratchBuf, s.shapeEmojiImage(input))
+		} else if input.Face != nil {
 			s.outScratchBuf = append(s.outScratchBuf, s.shaper.Shape(input))
 		} else {
 			s.outScratchBuf = append(s.outScratchBuf, shaping.Output{
@@ -809,7 +825,7 @@ func (s *shaperImpl) Shape(pathOps *op.Ops, gs []Glyph) clip.PathSpec {
 		case font.GlyphSVG:
 			outline = glyphData.Outline
 		case font.GlyphColor:
-			outline = colorGlyphOutline(face, gid, glyphData)
+			outline = colorGlyphOutline(face, glyphData)
 		default:
 			continue
 		}
@@ -884,6 +900,10 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 		if faceIdx >= len(s.faces) {
 			continue
 		}
+		if s.emojiImages != nil && faceIdx == s.imageFaceIndex {
+			s.emojiImageOps(ops, g, g.X-x)
+			continue
+		}
 		face := s.faces[faceIdx]
 		if face == nil {
 			continue
@@ -895,7 +915,7 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 			// the glyph's size in pixels, and shown as a bitmap glyph is.
 			bitmapData, ok := s.bitmapGlyphCache.Get(g.ID)
 			if !ok {
-				if img, imgOff, ok := colorGlyphImage(face, glyphData, ppem); ok {
+				if img, imgOff, ok := colorGlyphImage(face, gid, glyphData, ppem); ok {
 					bitmapData = bitmap{img: paint.NewImageOp(img), size: img.Bounds().Size(), off: imgOff}
 				}
 				s.bitmapGlyphCache.Put(g.ID, bitmapData)
