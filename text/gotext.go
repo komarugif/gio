@@ -203,7 +203,14 @@ type runLayout struct {
 // shaperImpl implements the shaping and line-wrapping of opentype fonts.
 type shaperImpl struct {
 	// Fields for tracking fonts/faces.
-	fontMap      *fontscan.FontMap
+	fontMap *fontscan.FontMap
+	// query is the fontMap's, to return to after a fallback one.
+	query fontscan.Query
+	// emojiFamily is the family that draws emoji before the query's fonts
+	// do, "" for none; ownEmoji is its face, once looked for.
+	emojiFamily  string
+	ownEmoji     *font.Face
+	ownEmojiSet  bool
 	faces        []*font.Face
 	faceToIndex  map[*font.Font]int
 	faceMeta     []giofont.Font
@@ -371,9 +378,25 @@ func (s *shaperImpl) splitBidi(input shaping.Input) []shaping.Input {
 // ResolveFace allows shaperImpl to implement shaping.FontMap, wrapping its fontMap
 // field and ensuring that any faces loaded as part of the search are registered with
 // ids so that they can be referred to by a GlyphID.
+//
+// The font map prunes the fonts that stand in for a family to the query's
+// aspect, all families at once: an emoji font, which has one weight, is
+// dropped from a bold or italic query, and is not among what stands in for
+// monospace. A character that the face found does not have is looked for
+// again in the regular aspect with the emoji family added, so that it is
+// drawn upright and regular rather than as a box.
 func (s *shaperImpl) ResolveFace(r rune) *font.Face {
 	face := s.fontMap.ResolveFace(r)
 	if face != nil {
+		if _, ok := face.NominalGlyph(r); !ok && !ignoreFaceChange(r) {
+			s.fontMap.SetQuery(fontscan.Query{Families: append(slices.Clone(s.query.Families), fontscan.Emoji)})
+			if fallback := s.fontMap.ResolveFace(r); fallback != nil {
+				if _, ok := fallback.NominalGlyph(r); ok {
+					face = fallback
+				}
+			}
+			s.fontMap.SetQuery(s.query)
+		}
 		family, aspect := s.fontMap.FontMetadata(face.Font)
 		md := opentype.DescriptionToFont(font.Description{
 			Family: family,
@@ -445,7 +468,13 @@ func (s *shaperImpl) splitByFace(input shaping.Input, buffer []shaping.Input) []
 func (s *shaperImpl) resolveFaceAt(text []rune, i int) *font.Face {
 	r := text[i]
 	next, prev := i+1, i-1
-	if (next < len(text) && (text[next] == '\uFE0F' || text[next] == '\u20E3')) || (prev >= 0 && text[prev] == '\u200D') {
+	sequence := (next < len(text) && (text[next] == '\uFE0F' || text[next] == '\u20E3')) || (prev >= 0 && text[prev] == '\u200D')
+	if sequence || emojiPresentation(r) {
+		if own := s.ownEmojiFace(); own != nil {
+			if _, ok := own.NominalGlyph(r); ok {
+				return own
+			}
+		}
 		// U+1F600 GRINNING FACE finds the emoji face of the query.
 		if face := s.ResolveFace('\U0001F600'); face != nil {
 			if _, ok := face.NominalGlyph(r); ok {
@@ -454,6 +483,56 @@ func (s *shaperImpl) resolveFaceAt(text []rune, i int) *font.Face {
 		}
 	}
 	return s.ResolveFace(r)
+}
+
+// ownEmojiFace is the face of the emoji family, nil without one.
+func (s *shaperImpl) ownEmojiFace() *font.Face {
+	if s.emojiFamily == "" {
+		return nil
+	}
+	if !s.ownEmojiSet {
+		s.ownEmojiSet = true
+		s.fontMap.SetQuery(fontscan.Query{Families: []string{s.emojiFamily}})
+		if face := s.fontMap.ResolveFace('\U0001F600'); face != nil {
+			if _, ok := face.NominalGlyph('\U0001F600'); ok {
+				family, aspect := s.fontMap.FontMetadata(face.Font)
+				s.addFace(face, opentype.DescriptionToFont(font.Description{Family: family, Aspect: aspect}))
+				s.ownEmoji = face
+			}
+		}
+		s.fontMap.SetQuery(s.query)
+	}
+	return s.ownEmoji
+}
+
+// emojiPresentation reports whether r is drawn as an emoji on its own,
+// without U+FE0F after it, when the emoji face has it: the pictographs of
+// the supplementary planes, the flags' letters among them, the characters
+// of the basic plane whose Emoji_Presentation property is set, and the
+// Miscellaneous Symbols and Dingbats, which messengers draw as emoji
+// whatever their presentation: Telegram sends the heart of a reaction as a
+// bare U+2764, and a text font that has it would draw it black. Digits, #
+// and * are not.
+func emojiPresentation(r rune) bool {
+	if (r >= 0x1F000 && r <= 0x1FAFF) || (r >= 0x2600 && r <= 0x27BF) {
+		return true
+	}
+	if r < 0x231A || r > 0x2B55 {
+		return false
+	}
+	for _, e := range emojiPresentationBMP {
+		if r >= e[0] && r <= e[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// emojiPresentationBMP are the ranges of Emoji_Presentation=Yes below
+// U+10000 and outside U+2600–27BF, from Unicode's emoji-data.txt.
+var emojiPresentationBMP = [...][2]rune{
+	{0x231A, 0x231B}, {0x23E9, 0x23EC}, {0x23F0, 0x23F0}, {0x23F3, 0x23F3},
+	{0x25FD, 0x25FE}, {0x2B1B, 0x2B1C}, {0x2B50, 0x2B50}, {0x2B55, 0x2B55},
 }
 
 // ignoreFaceChange reports whether r does not choose a face: spaces and
@@ -563,10 +642,11 @@ func (s *shaperImpl) shapeAndWrapText(params Parameters, txt []rune) (_ []shapin
 			families = parsed
 		}
 	}
-	s.fontMap.SetQuery(fontscan.Query{
+	s.query = fontscan.Query{
 		Families: families,
 		Aspect:   opentype.FontToDescription(params.Font).Aspect,
-	})
+	}
+	s.fontMap.SetQuery(s.query)
 	if wc.TruncateAfterLines > 0 {
 		if len(params.Truncator) == 0 {
 			params.Truncator = "…"
@@ -728,6 +808,8 @@ func (s *shaperImpl) Shape(pathOps *op.Ops, gs []Glyph) clip.PathSpec {
 			outline = glyphData
 		case font.GlyphSVG:
 			outline = glyphData.Outline
+		case font.GlyphColor:
+			outline = colorGlyphOutline(face, gid, glyphData)
 		default:
 			continue
 		}
@@ -798,7 +880,7 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 		if i == 0 {
 			x = g.X
 		}
-		_, faceIdx, gid := splitGlyphID(g.ID)
+		ppem, faceIdx, gid := splitGlyphID(g.ID)
 		if faceIdx >= len(s.faces) {
 			continue
 		}
@@ -808,6 +890,29 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 		}
 		glyphData := face.GlyphData(gid)
 		switch glyphData := glyphData.(type) {
+		case font.GlyphColor:
+			// The layers of a color glyph are drawn once into an image of
+			// the glyph's size in pixels, and shown as a bitmap glyph is.
+			bitmapData, ok := s.bitmapGlyphCache.Get(g.ID)
+			if !ok {
+				if img, imgOff, ok := colorGlyphImage(face, glyphData, ppem); ok {
+					bitmapData = bitmap{img: paint.NewImageOp(img), size: img.Bounds().Size(), off: imgOff}
+				}
+				s.bitmapGlyphCache.Put(g.ID, bitmapData)
+			}
+			if bitmapData.size == (image.Point{}) {
+				continue
+			}
+			// The image is where Shape draws the outlines.
+			off := op.Affine(f32.AffineId().Offset(f32.Point{
+				X: fixedToFloat((g.X-x)-g.Offset.X) + float32(bitmapData.off.X),
+				Y: -fixedToFloat(g.Offset.Y) + float32(bitmapData.off.Y),
+			})).Push(ops)
+			cl := clip.Rect{Max: bitmapData.size}.Push(ops)
+			bitmapData.img.Add(ops)
+			paint.PaintOp{}.Add(ops)
+			cl.Pop()
+			off.Pop()
 		case font.GlyphBitmap:
 			var imgOp paint.ImageOp
 			var imgSize image.Point

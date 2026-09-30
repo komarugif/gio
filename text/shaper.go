@@ -217,6 +217,7 @@ type Shaper struct {
 	config struct {
 		disableSystemFonts bool
 		collection         []FontFace
+		emojiFamily        string
 	}
 	initialized      bool
 	shaper           shaperImpl
@@ -258,6 +259,16 @@ func WithCollection(collection []FontFace) ShaperOption {
 	}
 }
 
+// WithEmojiFamily names the family of a font of the collection that draws
+// emoji before any other font does: the characters that are emoji on their
+// own, and the sequences that ask for the emoji presentation. It is not
+// one of the typeface's families, so its digits, # and * stay out of text.
+func WithEmojiFamily(family string) ShaperOption {
+	return func(s *Shaper) {
+		s.config.emojiFamily = family
+	}
+}
+
 // NewShaper constructs a shaper with the provided options.
 func NewShaper(options ...ShaperOption) *Shaper {
 	l := &Shaper{}
@@ -275,6 +286,7 @@ func (l *Shaper) init() {
 	l.initialized = true
 	l.reader = bufio.NewReader(nil)
 	l.shaper = *newShaperImpl(!l.config.disableSystemFonts, l.config.collection)
+	l.shaper.emojiFamily = l.config.emojiFamily
 }
 
 // Layout text from an io.Reader according to a set of options. Results can be retrieved by

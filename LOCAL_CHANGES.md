@@ -142,6 +142,45 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
   and a one-line label cut them to "…". Test: `text` `TestEmojiPresentationFace`,
   skipped without a system emoji font.
 
+- Color glyphs of the COLR table (`text/colr.go`, `text/gotext.go`): go-text
+  returns a `font.GlyphColor` for them, which `Shape` and `Bitmaps` skipped,
+  so that the emoji of Windows' Segoe UI Emoji were not drawn at all (Noto
+  Color Emoji has bitmaps, and was). `Bitmaps` draws the layers of a COLR
+  version 0 glyph, each an outline filled with a color of the font's first
+  palette, once into an image at the glyph's size in pixels
+  (`golang.org/x/image/vector`), kept in the bitmap cache, and shows it where
+  `Shape` draws outlines. Layers in the color of the text go to `Shape`'s
+  path. A COLR version 1 glyph (gradients, as in the Segoe UI Emoji of
+  Windows 11) is not drawn in color: `Shape` draws the glyph's own outline in
+  the color of the text, which fonts such as Noto-COLRv1 leave empty: the
+  messenger turns such a font down for emoji. Tests: `text` `TestColorGlyphImage`,
+  `TestColorGlyphBitmap`, skipped without a system font of such glyphs.
+
+- Emoji in bold, italic and monospace text (`text/gotext.go`
+  `shaperImpl.ResolveFace`): fontscan prunes the fonts that stand in for a
+  family to the query's aspect, all families at once, so an emoji font,
+  which has one weight, is found only when the typeface names it (the theme
+  names Noto Color Emoji, not Segoe UI Emoji), and nothing stands in for
+  `monospace` with emoji. A character that the face found does not have is
+  looked for again in the regular aspect with the `emoji` family added; the
+  query is kept in `shaperImpl.query` to return to. Test: `text`
+  `TestEmojiFaceInBoldAndMonospace`.
+
+- An emoji font of the program's own (`text/shaper.go` `WithEmojiFamily`,
+  `text/gotext.go`): the family named draws, before the typeface's fonts,
+  the characters that are emoji on their own and the emoji sequences.
+  `emojiPresentation` tells the former: the supplementary planes'
+  pictographs, the basic plane's Emoji_Presentation=Yes, and U+2600–27BF,
+  which messengers draw as emoji whatever their presentation (Telegram sends
+  a reaction's heart as a bare U+2764). Without the family they go to the
+  query's emoji face, the one that has U+1F600, before a text font that has
+  them in black. It is not one of the
+  typeface's families: fontscan tries the families named before all that
+  stand in for generic ones, so an emoji font named in the typeface would
+  draw the digits, # and * of all text, which emoji fonts have for keycaps.
+  Tests: `text` `TestEmojiFamily`, skipped without a second system font
+  that has emoji, and `TestEmojiPresentation`.
+
 Run the focused check from the project root:
 `go test gioui.org/app/internal/xkb -run TestNonLatinShortcuts`.
 

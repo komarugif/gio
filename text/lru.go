@@ -77,6 +77,8 @@ type bitmapCache = lru[GlyphID, bitmap]
 type bitmap struct {
 	img  paint.ImageOp
 	size image.Point
+	// off is the image's origin from the glyph's, for a color glyph.
+	off image.Point
 }
 
 type layoutCache = lru[layoutKey, document]
