@@ -56,6 +56,10 @@ import (
 //go:generate wayland-scanner private-code /usr/share/wayland-protocols/staging/xdg-activation/xdg-activation-v1.xml wayland_xdg_activation.c
 //go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_xdg_activation.c
 
+//go:generate wayland-scanner client-header /usr/share/wayland-protocols/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml wayland_xdg_toplevel_icon.h
+//go:generate wayland-scanner private-code /usr/share/wayland-protocols/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml wayland_xdg_toplevel_icon.c
+//go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_xdg_toplevel_icon.c
+
 /*
 #cgo linux pkg-config: wayland-client wayland-cursor
 #cgo freebsd openbsd LDFLAGS: -lwayland-client -lwayland-cursor
@@ -69,6 +73,7 @@ import (
 #include "wayland_xdg_shell.h"
 #include "wayland_xdg_decoration.h"
 #include "wayland_xdg_activation.h"
+#include "wayland_xdg_toplevel_icon.h"
 #include "wayland_background_effect.h"
 
 extern const struct wl_registry_listener gio_registry_listener;
@@ -109,6 +114,8 @@ type wlDisplay struct {
 	effects *C.struct_ext_background_effect_manager_v1
 	// activation raises a window with a token another client obtained.
 	activation *C.struct_xdg_activation_v1
+	// icons sets the icons of windows.
+	icons      *C.struct_xdg_toplevel_icon_manager_v1
 	effectCaps C.uint32_t
 
 	// Notification pipe fds.
@@ -758,6 +765,8 @@ func gio_onRegistryGlobal(data unsafe.Pointer, reg *C.struct_wl_registry, name C
 		d.decor = (*C.struct_zxdg_decoration_manager_v1)(C.wl_registry_bind(reg, name, &C.zxdg_decoration_manager_v1_interface, 1))
 	case "xdg_activation_v1":
 		d.activation = (*C.struct_xdg_activation_v1)(C.wl_registry_bind(reg, name, &C.xdg_activation_v1_interface, 1))
+	case "xdg_toplevel_icon_manager_v1":
+		d.icons = (*C.struct_xdg_toplevel_icon_manager_v1)(C.wl_registry_bind(reg, name, &C.xdg_toplevel_icon_manager_v1_interface, 1))
 	case "ext_background_effect_manager_v1":
 		d.effects = (*C.struct_ext_background_effect_manager_v1)(C.wl_registry_bind(reg, name, &C.ext_background_effect_manager_v1_interface, 1))
 		C.ext_background_effect_manager_v1_add_listener(d.effects, &C.gio_background_effect_manager_listener, unsafe.Pointer(d.disp))
@@ -1138,6 +1147,9 @@ func (w *window) Configure(options []Option) {
 	cnf := w.config
 	cnf.apply(cfg, options)
 	w.config.decoHeight = cnf.decoHeight
+	if cnf.icon != nil {
+		w.setIcon(cnf.icon)
+	}
 	if cnf.Transparent != prev.Transparent || cnf.BlurBehind != w.blurWanted {
 		w.config.Transparent, w.blurWanted = cnf.Transparent, cnf.BlurBehind
 		// Applied with the next frame, which a changed config asks for.
@@ -1232,6 +1244,72 @@ func (w *window) Perform(actions system.Action) {
 			w.closing = true
 		}
 	})
+}
+
+// setIcon gives the compositor the icon's images in shared memory, applied
+// with the next commit. Nothing stays: once the icon is set, the protocol
+// lets the client destroy it, and its buffers after it.
+func (w *window) setIcon(icon *windowIcon) {
+	if w.disp.icons == nil {
+		return
+	}
+	type buffer struct {
+		size, offset int
+	}
+	var (
+		images []buffer
+		data   []byte
+	)
+	for _, img := range icon.images {
+		size, pixels := iconPixels(img, true)
+		if size == 0 {
+			continue
+		}
+		images = append(images, buffer{size: size, offset: len(data)})
+		// ARGB8888 of wl_shm is little-endian.
+		for _, p := range pixels {
+			data = append(data, byte(p), byte(p>>8), byte(p>>16), byte(p>>24))
+		}
+	}
+	if len(images) == 0 {
+		return
+	}
+	f, err := anonymousFile(data)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	pool := C.wl_shm_create_pool(w.disp.shm, C.int32_t(f.Fd()), C.int32_t(len(data)))
+	defer C.wl_shm_pool_destroy(pool)
+	cicon := C.xdg_toplevel_icon_manager_v1_create_icon(w.disp.icons)
+	buffers := make([]*C.struct_wl_buffer, 0, len(images))
+	for _, img := range images {
+		buf := C.wl_shm_pool_create_buffer(pool, C.int32_t(img.offset), C.int32_t(img.size), C.int32_t(img.size), C.int32_t(img.size*4), C.WL_SHM_FORMAT_ARGB8888)
+		C.xdg_toplevel_icon_v1_add_buffer(cicon, buf, 1)
+		buffers = append(buffers, buf)
+	}
+	C.xdg_toplevel_icon_manager_v1_set_icon(w.disp.icons, w.topLvl, cicon)
+	C.xdg_toplevel_icon_v1_destroy(cicon)
+	for _, buf := range buffers {
+		C.wl_buffer_destroy(buf)
+	}
+}
+
+// anonymousFile returns a file with data that has no name, for shared
+// memory: in XDG_RUNTIME_DIR, a tmpfs, as libwayland-cursor's files are.
+// The file is sent with a request by a duplicate of its descriptor, so it
+// can be closed once the request is made.
+func anonymousFile(data []byte) (*os.File, error) {
+	f, err := os.CreateTemp(os.Getenv("XDG_RUNTIME_DIR"), "gio-shm-")
+	if err != nil {
+		return nil, err
+	}
+	os.Remove(f.Name())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // activate asks the compositor to raise and focus the window, which it does
@@ -2067,6 +2145,9 @@ func (d *wlDisplay) destroy() {
 	}
 	if d.activation != nil {
 		C.xdg_activation_v1_destroy(d.activation)
+	}
+	if d.icons != nil {
+		C.xdg_toplevel_icon_manager_v1_destroy(d.icons)
 	}
 	if d.decor != nil {
 		C.zxdg_decoration_manager_v1_destroy(d.decor)

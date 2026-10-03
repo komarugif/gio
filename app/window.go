@@ -1079,6 +1079,49 @@ func BlurBehind(enabled bool) Option {
 	}
 }
 
+// Icon sets the icon of the window, which the taskbar and the window
+// switcher show, from images of several sizes. Each image must be square;
+// the system picks the size it shows. The window does not keep the images.
+//
+// Icon is supported on X11, and on Wayland compositors with the
+// xdg-toplevel-icon-v1 protocol, such as KWin. Elsewhere the icon comes
+// from the executable, or from the desktop entry of [ID].
+func Icon(images ...image.Image) Option {
+	icon := &windowIcon{images: images}
+	return func(_ unit.Metric, cnf *Config) {
+		cnf.icon = icon
+	}
+}
+
+// windowIcon is the images of an Icon option.
+type windowIcon struct {
+	images []image.Image
+}
+
+// iconPixels returns the pixels of a square icon image row by row, as
+// 0xAARRGGBB, premultiplied by alpha or not. It returns a size of 0 for an
+// image that is empty or not square.
+func iconPixels(img image.Image, premultiplied bool) (size int, pixels []uint32) {
+	b := img.Bounds()
+	if b.Dx() == 0 || b.Dx() != b.Dy() {
+		return 0, nil
+	}
+	pixels = make([]uint32, 0, b.Dx()*b.Dy())
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			var r, g, bl, a uint32
+			if premultiplied {
+				r, g, bl, a = img.At(x, y).RGBA()
+			} else {
+				c := color.NRGBA64Model.Convert(img.At(x, y)).(color.NRGBA64)
+				r, g, bl, a = uint32(c.R), uint32(c.G), uint32(c.B), uint32(c.A)
+			}
+			pixels = append(pixels, a>>8<<24|r>>8<<16|g>>8<<8|bl>>8)
+		}
+	}
+	return b.Dx(), pixels
+}
+
 // TopMost windows will be rendered above all other non-top-most windows.
 //
 // TopMost windows are supported on macOS, Windows.

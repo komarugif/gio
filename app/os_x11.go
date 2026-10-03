@@ -95,6 +95,10 @@ type x11Window struct {
 		wmStateMaximizedHorz C.Atom
 		// _NET_WM_STATE_MAXIMIZED_VERT
 		wmStateMaximizedVert C.Atom
+		// "_NET_WM_ICON"
+		wmIcon C.Atom
+		// "CARDINAL"
+		cardinal C.Atom
 	}
 	metric unit.Metric
 	notify struct {
@@ -180,6 +184,9 @@ func (w *x11Window) Configure(options []Option) {
 	cnf.apply(w.metric, options)
 	// Decorations are never disabled.
 	cnf.Decorated = true
+	if cnf.icon != nil {
+		w.setIcon(cnf.icon)
+	}
 
 	switch cnf.Mode {
 	case Fullscreen:
@@ -249,6 +256,35 @@ func (w *x11Window) Configure(options []Option) {
 		w.config.Decorated = cnf.Decorated
 	}
 	w.ProcessEvent(ConfigEvent{Config: w.config})
+}
+
+// setIcon sets _NET_WM_ICON: the width, the height and the pixels of each
+// image in turn, non-premultiplied ARGB in the longs of a 32-bit property.
+// Images that would make the request longer than the server takes are left
+// out.
+func (w *x11Window) setIcon(icon *windowIcon) {
+	limit := int(C.XExtendedMaxRequestSize(w.x))
+	if limit == 0 {
+		limit = int(C.XMaxRequestSize(w.x))
+	}
+	// The request's own fields take 6 of its 4-byte units.
+	limit -= 6
+	var data []C.ulong
+	for _, img := range icon.images {
+		size, pixels := iconPixels(img, false)
+		if size == 0 || len(data)+2+len(pixels) > limit {
+			continue
+		}
+		data = append(data, C.ulong(size), C.ulong(size))
+		for _, p := range pixels {
+			data = append(data, C.ulong(p))
+		}
+	}
+	if len(data) == 0 {
+		return
+	}
+	C.XChangeProperty(w.x, w.xw, w.atoms.wmIcon, w.atoms.cardinal, 32, C.PropModeReplace,
+		(*C.uchar)(unsafe.Pointer(&data[0])), C.int(len(data)))
 }
 
 func (w *x11Window) setTitle(prev, cnf Config) {
@@ -921,6 +957,8 @@ func newX11Window(gioWin *callbacks, options []Option) error {
 	w.atoms.wmActiveWindow = w.atom("_NET_ACTIVE_WINDOW", false)
 	w.atoms.wmStateMaximizedHorz = w.atom("_NET_WM_STATE_MAXIMIZED_HORZ", false)
 	w.atoms.wmStateMaximizedVert = w.atom("_NET_WM_STATE_MAXIMIZED_VERT", false)
+	w.atoms.wmIcon = w.atom("_NET_WM_ICON", false)
+	w.atoms.cardinal = w.atom("CARDINAL", false)
 	w.setupDrop()
 	w.setupXI2()
 

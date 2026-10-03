@@ -63,6 +63,9 @@ type Config struct {
 	// decoHeight is the height of the fallback decoration for platforms such
 	// as Wayland that may need fallback client-side decorations.
 	decoHeight unit.Dp
+	// icon holds the images of an Icon option until the driver sets them;
+	// a driver does not keep it in its own Config.
+	icon *windowIcon
 }
 
 // ConfigEvent is sent whenever the configuration of a Window changes.
