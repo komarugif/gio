@@ -117,6 +117,10 @@ type x11Window struct {
 	// dnd is the drag of files over the window.
 	dnd x11Drag
 
+	// xi2 is set when the window takes its pointer events through
+	// XInput 2, for smooth scrolling (os_x11_xi2.go).
+	xi2 *x11XI2
+
 	wakeups chan struct{}
 	handler x11EventHandler
 	buf     [100]byte
@@ -480,11 +484,12 @@ func (w *x11Window) dispatch() {
 	}
 	if !syn {
 		anim = w.animating && !w.config.Suspended && w.config.Mode != Minimized
-		if !anim {
+		if !anim && !w.xi2Flinging() {
 			// Clear poll events.
 			*xEvents = 0
-			// Wait for X event or gio notification.
-			if _, err := syscall.Poll(pollfds, -1); err != nil && err != syscall.EINTR {
+			// Wait for X event or gio notification, or for the time a
+			// touchpad's scrolling is taken to have ended (os_x11_xi2.go).
+			if _, err := syscall.Poll(pollfds, w.xi2FlingWait()); err != nil && err != syscall.EINTR {
 				panic(fmt.Errorf("x11 loop: poll failed: %w", err))
 			}
 			switch {
@@ -496,6 +501,10 @@ func (w *x11Window) dispatch() {
 			case *xEvents&(syscall.POLLERR|syscall.POLLHUP) != 0:
 			}
 		}
+	}
+	// The kinetic scrolling after a touchpad's moves on each frame.
+	if w.xi2Fling(time.Now()) {
+		anim = true
 	}
 	// Clear notifications.
 	for {
@@ -549,6 +558,69 @@ func (w *x11Window) atom(name string, onlyIfExists bool) C.Atom {
 	return C.XInternAtom(w.x, cname, flag)
 }
 
+// pointerButton handles a press or a release of a pointer button, from the
+// core protocol or from XInput 2. The buttons of a wheel scroll.
+func (w *x11Window) pointerButton(release bool, button uint, pos f32.Point, t C.Time) {
+	ev := pointer.Event{
+		Kind:      pointer.Press,
+		Source:    pointer.Mouse,
+		Position:  pos,
+		Time:      time.Duration(t) * time.Millisecond,
+		Modifiers: w.xkb.Modifiers(),
+	}
+	if release {
+		ev.Kind = pointer.Release
+	}
+	var btn pointer.Buttons
+	const scrollScale = 10
+	switch button {
+	case C.Button1:
+		btn = pointer.ButtonPrimary
+	case C.Button2:
+		btn = pointer.ButtonTertiary
+	case C.Button3:
+		btn = pointer.ButtonSecondary
+	case C.Button4:
+		ev.Kind = pointer.Scroll
+		// scroll up or left (if shift is pressed).
+		if ev.Modifiers == key.ModShift {
+			ev.Scroll.X = -scrollScale
+		} else {
+			ev.Scroll.Y = -scrollScale
+		}
+	case C.Button5:
+		// scroll down or right (if shift is pressed).
+		ev.Kind = pointer.Scroll
+		if ev.Modifiers == key.ModShift {
+			ev.Scroll.X = +scrollScale
+		} else {
+			ev.Scroll.Y = +scrollScale
+		}
+	case 6:
+		// http://xahlee.info/linux/linux_x11_mouse_button_number.html
+		// scroll left.
+		ev.Kind = pointer.Scroll
+		ev.Scroll.X = -scrollScale * 2
+	case 7:
+		// scroll right
+		ev.Kind = pointer.Scroll
+		ev.Scroll.X = +scrollScale * 2
+	default:
+		return
+	}
+	// The core protocol tells scrolling only by the buttons of the wheel; a
+	// touchpad's driver presses them too, unless XInput 2 takes its
+	// scrolling (os_x11_xi2.go).
+	ev.Wheel = ev.Kind == pointer.Scroll
+	if release {
+		w.pointerBtns &^= btn
+	} else {
+		w.pointerBtns |= btn
+	}
+	ev.Buttons = w.pointerBtns
+	w.ProcessEvent(ev)
+}
+
 // x11EventHandler wraps static variables for the main event loop.
 // Its sole purpose is to prevent heap allocation and reduce clutter
 // in x11window.loop.
@@ -597,67 +669,9 @@ func (h *x11EventHandler) handleEvents() bool {
 			}
 		case C.ButtonPress, C.ButtonRelease:
 			bevt := (*C.XButtonEvent)(unsafe.Pointer(xev))
-			ev := pointer.Event{
-				Kind:   pointer.Press,
-				Source: pointer.Mouse,
-				Position: f32.Point{
-					X: float32(bevt.x),
-					Y: float32(bevt.y),
-				},
-				Time:      time.Duration(bevt.time) * time.Millisecond,
-				Modifiers: w.xkb.Modifiers(),
-			}
-			if bevt._type == C.ButtonRelease {
-				ev.Kind = pointer.Release
-			}
-			var btn pointer.Buttons
-			const scrollScale = 10
-			switch bevt.button {
-			case C.Button1:
-				btn = pointer.ButtonPrimary
-			case C.Button2:
-				btn = pointer.ButtonTertiary
-			case C.Button3:
-				btn = pointer.ButtonSecondary
-			case C.Button4:
-				ev.Kind = pointer.Scroll
-				// scroll up or left (if shift is pressed).
-				if ev.Modifiers == key.ModShift {
-					ev.Scroll.X = -scrollScale
-				} else {
-					ev.Scroll.Y = -scrollScale
-				}
-			case C.Button5:
-				// scroll down or right (if shift is pressed).
-				ev.Kind = pointer.Scroll
-				if ev.Modifiers == key.ModShift {
-					ev.Scroll.X = +scrollScale
-				} else {
-					ev.Scroll.Y = +scrollScale
-				}
-			case 6:
-				// http://xahlee.info/linux/linux_x11_mouse_button_number.html
-				// scroll left.
-				ev.Kind = pointer.Scroll
-				ev.Scroll.X = -scrollScale * 2
-			case 7:
-				// scroll right
-				ev.Kind = pointer.Scroll
-				ev.Scroll.X = +scrollScale * 2
-			default:
-				continue
-			}
-			// The core protocol tells scrolling only by the buttons of
-			// the wheel; a touchpad's driver presses them too.
-			ev.Wheel = ev.Kind == pointer.Scroll
-			switch _type {
-			case C.ButtonPress:
-				w.pointerBtns |= btn
-			case C.ButtonRelease:
-				w.pointerBtns &^= btn
-			}
-			ev.Buttons = w.pointerBtns
-			w.ProcessEvent(ev)
+			w.pointerButton(bevt._type == C.ButtonRelease, uint(bevt.button), f32.Pt(float32(bevt.x), float32(bevt.y)), bevt.time)
+		case C.GenericEvent:
+			w.handleXI2(xev)
 		case C.MotionNotify:
 			mevt := (*C.XMotionEvent)(unsafe.Pointer(xev))
 			w.ProcessEvent(pointer.Event{
@@ -908,6 +922,7 @@ func newX11Window(gioWin *callbacks, options []Option) error {
 	w.atoms.wmStateMaximizedHorz = w.atom("_NET_WM_STATE_MAXIMIZED_HORZ", false)
 	w.atoms.wmStateMaximizedVert = w.atom("_NET_WM_STATE_MAXIMIZED_VERT", false)
 	w.setupDrop()
+	w.setupXI2()
 
 	// extensions
 	C.XSetWMProtocols(dpy, win, &w.atoms.evDelWindow, 1)

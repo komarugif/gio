@@ -294,9 +294,11 @@ Run the focused check from the project root:
   - `app/os_wayland.go`: set when the frame had `wl_pointer.axis_discrete`
     steps, which only a wheel sends; a touchpad (`axis` alone) and the fling
     Gio makes after `axis_stop` leave it unset.
-  - `app/os_x11.go`: always set. The core protocol tells scrolling only as
-    the buttons 4 to 7, which a touchpad's driver presses too; telling them
-    apart would take XInput 2.1 smooth scrolling.
+  - `app/os_x11.go`, `app/os_x11_xi2.go`: set for the buttons 4 to 7 and for
+    the smooth scrolling of a device that is no touchpad, unset for a
+    touchpad's (XInput 2, below). Without XInput 2 the core protocol tells
+    scrolling only as those buttons, which a touchpad's driver presses too,
+    and it is always set.
   - `app/os_windows.go`, `app/wheel.go`: set when the `WM_MOUSEWHEEL`
     distance is of whole notches of 120 (`isWheelDelta`), which Windows
     joins when the wheel turns fast (−240, −360); a precision touchpad, its
@@ -304,3 +306,66 @@ Run the focused check from the project root:
     `TestIsWheelDelta`, with distances measured on Windows 11.
   - macOS, Android, iOS and js leave it unset; `gio-mw` tells a notch there
     by its size, as before.
+
+- Smooth scrolling on X11, through XInput 2.1, which upstream Gio does not
+  take: a touchpad scrolled by the notches of a wheel the server made of it,
+  in steps of a notch.
+  - `app/os_x11_xi2.go`: a window selects the XInput 2 events of the master
+    pointers (`XI_ButtonPress`, `XI_ButtonRelease`, `XI_Motion`, `XI_Enter`)
+    and, on the root window, the changes of devices (`XI_DeviceChanged`,
+    `XI_HierarchyChanged`). The server then sends the window no core
+    pointer events, so it takes its buttons and moves from XInput 2 too,
+    through the same code (`pointerButton`). A motion's scroll valuators,
+    running totals, scroll by their change from the last value, in units of
+    the valuator's increment, 20 of Gio's scroll units each, a notch's two
+    core button events of 10: a wheel scrolls as far as before. The buttons
+    4 to 7 the server emulates from them (`XIPointerEmulated`) are skipped;
+    other emulated buttons, a touchscreen's, are not. The last values are
+    forgotten when the pointer enters, as it scrolled elsewhere meanwhile,
+    and for the device the master switches to; what is known of the devices,
+    when they change. The first event after that has nothing to scroll
+    from, and a wheel's first notch would be lost: the buttons the server
+    emulates from that one event scroll in its stead (`countsEmulated`).
+    Asking the server for the valuators' values instead, as Qt does, races
+    with the events already queued. A touchpad is told by the properties its driver sets,
+    `libinput Tapping Enabled` or `Synaptics Off`, as GTK does, and its
+    scrolling has `Wheel` unset. A motion that only scrolls does not move
+    the pointer.
+  - libXi is loaded with `dlopen` (`libXi.so.6`), as GL and Vulkan are, and
+    its types are declared there rather than taken from `XInput2.h`: neither
+    running nor building needs it. Their sizes and the offsets of their
+    fields were checked against libXi 1.8.1's header on amd64. Requests about
+    a device run under an error trap: Xlib's default handler ends the
+    process on an error, as a device unplugged meanwhile makes. Without
+    libXi, without XInput 2.1 on the server, or with `GIO_X11_NOXI2` set, a
+    window takes the core events as before. `GIO_X11_XI2_TRACE` logs what is
+    known of the devices and the scrolling events.
+  - Kinetic scrolling after a touchpad's, as Gio makes it on Wayland after
+    `axis_stop` (`xi2Fling`, `app/xi2scroll.go`): X11 does not tell when the
+    fingers leave. libinput ends a scroll with a stop, which
+    xf86-input-libinput passes on as no change and the server drops: of 943
+    scroll events of a real touchpad, one was. A pause of 40 ms in a
+    touchpad's scrolling stands for it (`xi2FlingPause`): it sends an event
+    every 7 to 9 ms, and pauses of more than 40 ms came 4 times in 529, when
+    the fingers all but stopped, too slowly to fling; 40 ms is also
+    `fling.Extrapolation`'s longest gap within a gesture. The event loop
+    waits for that pause (`xi2FlingWait`), then the velocity of the last
+    100 ms starts `fling.Animation` and its steps scroll on each frame. A
+    new scroll, a wheel's or a touchpad's, or a press stops it. Replayed
+    through it, a real touchpad's swipes of 720 to 1016 pixels went 296 to
+    1571 further, and its slow scrolls 0 and 79. Fingers that stop at speed
+    and stay on the touchpad fling too, as nothing tells them from a lift.
+  - xf86-input-libinput 1.4 (Linux Mint 22) gives its scroll valuators an
+    increment of 120: a wheel's notch is 120, a touchpad's 15 of libinput's
+    units, 8 each. `gio-mw/widget/scroll` scales a touchpad's 20 units on
+    X11 by 0.375, to scroll 2.5 pixels for each of libinput's units, as on
+    Wayland.
+  - Tests: `TestXI2Valuators`, `TestXI2Scroll`, `TestXI2FirstNotch`,
+    `TestXI2Fling` (`app/xi2scroll.go`). Checked live on X11 (Xorg 21.1, XFCE, in
+    VirtualBox) with XTEST: buttons, drags, out of the window too, the
+    context menu and a wheel's buttons, the same as with the core events;
+    and with devices made through uinput, through libinput 1.25 and
+    xf86-input-libinput 1.4: a wheel scrolls a notch for each notch, the
+    first one too, a high-resolution wheel an eighth for each eighth, and a
+    two-finger touchpad, told as one, at once, 20 mm by about 500 pixels,
+    as libinput's 200 units scroll on Wayland.
