@@ -1750,6 +1750,9 @@ func (w *window) flushScroll() {
 		w.fling.xExtrapolation.SampleDelta(w.scroll.time, -w.scroll.dist.X)
 		w.fling.yExtrapolation.SampleDelta(w.scroll.time, -w.scroll.dist.Y)
 	}
+	// Only a wheel sends discrete steps; a touchpad and the fling send
+	// none.
+	wheel := w.scroll.steps != (image.Point{})
 	// Zero scroll distance prior to calling ProcessEvent, otherwise we may recursively
 	// re-process the scroll distance.
 	w.scroll.dist = f32.Point{}
@@ -1760,6 +1763,7 @@ func (w *window) flushScroll() {
 		Buttons:   w.pointerBtns,
 		Position:  w.lastPos,
 		Scroll:    total,
+		Wheel:     wheel,
 		Time:      w.scroll.time,
 		Modifiers: w.disp.xkb.Modifiers(),
 	})

@@ -709,6 +709,7 @@ func (w *window) scrollEvent(wParam, lParam uintptr, horizontal bool, kmods key.
 		Position:  p,
 		Buttons:   getPointerButtons(pi),
 		Scroll:    sp,
+		Wheel:     isWheelDelta(dist),
 		Modifiers: kmods,
 		Time:      windows.GetMessageTime(),
 	})

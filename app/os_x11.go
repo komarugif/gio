@@ -647,6 +647,9 @@ func (h *x11EventHandler) handleEvents() bool {
 			default:
 				continue
 			}
+			// The core protocol tells scrolling only by the buttons of
+			// the wheel; a touchpad's driver presses them too.
+			ev.Wheel = ev.Kind == pointer.Scroll
 			switch _type {
 			case C.ButtonPress:
 				w.pointerBtns |= btn

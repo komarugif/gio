@@ -285,3 +285,22 @@ Run the focused check from the project root:
     maintainer on X11 and Wayland: the areas show as the drag comes over the
     window and go when it leaves, and a picture dropped on the area of
     photos goes as a photo.
+
+- `pointer.Event.Wheel` tells a mouse wheel's notches from a touchpad's
+  scrolling and from kinetic scrolling, which Gio sent alike, so that a list
+  can glide by a notch and follow the fingers at once
+  (`gio-mw/widget/scroll`). Upstream Gio has no such field; `gio-mw` reads
+  it, and so builds with this fork only.
+  - `app/os_wayland.go`: set when the frame had `wl_pointer.axis_discrete`
+    steps, which only a wheel sends; a touchpad (`axis` alone) and the fling
+    Gio makes after `axis_stop` leave it unset.
+  - `app/os_x11.go`: always set. The core protocol tells scrolling only as
+    the buttons 4 to 7, which a touchpad's driver presses too; telling them
+    apart would take XInput 2.1 smooth scrolling.
+  - `app/os_windows.go`, `app/wheel.go`: set when the `WM_MOUSEWHEEL`
+    distance is of whole notches of 120 (`isWheelDelta`), which Windows
+    joins when the wheel turns fast (−240, −360); a precision touchpad, its
+    inertia and a free-spinning wheel send finer distances. Test:
+    `TestIsWheelDelta`, with distances measured on Windows 11.
+  - macOS, Android, iOS and js leave it unset; `gio-mw` tells a notch there
+    by its size, as before.
