@@ -188,6 +188,9 @@ type window struct {
 		time  time.Duration
 		steps image.Point
 		dist  f32.Point
+		// continuous is set when the axis source of the frame is
+		// continuous: a trackpoint's scrolling, say.
+		continuous bool
 	}
 	pointerBtns pointer.Buttons
 	lastPos     f32.Point
@@ -221,6 +224,9 @@ type window struct {
 		anim           fling.Animation
 		start          bool
 		dir            f32.Point
+		// continuous tells that the scrolling the fling carries on was
+		// continuous.
+		continuous bool
 	}
 
 	configured        bool
@@ -1038,6 +1044,8 @@ func gio_onPointerFrame(data unsafe.Pointer, p *C.struct_wl_pointer) {
 	}
 	w.flushScroll()
 	w.flushFling()
+	// The axis source is told again with the axes of each frame.
+	w.scroll.continuous = false
 }
 
 func (w *window) flushFling() {
@@ -1060,6 +1068,12 @@ func (w *window) flushFling() {
 
 //export gio_onPointerAxisSource
 func gio_onPointerAxisSource(data unsafe.Pointer, pointer *C.struct_wl_pointer, source C.uint32_t) {
+	s := callbackLoad(data).(*wlSeat)
+	w := s.pointerFocus
+	if w == nil {
+		return
+	}
+	w.scroll.continuous = source == C.WL_POINTER_AXIS_SOURCE_CONTINUOUS
 }
 
 //export gio_onPointerAxisStop
@@ -1753,19 +1767,27 @@ func (w *window) flushScroll() {
 	// Only a wheel sends discrete steps; a touchpad and the fling send
 	// none.
 	wheel := w.scroll.steps != (image.Point{})
+	continuous := w.scroll.continuous
+	if w.scroll.dist == (f32.Point{}) {
+		// The fling alone: it is of the scrolling it carries on.
+		continuous = w.fling.continuous
+	} else if !wheel {
+		w.fling.continuous = continuous
+	}
 	// Zero scroll distance prior to calling ProcessEvent, otherwise we may recursively
 	// re-process the scroll distance.
 	w.scroll.dist = f32.Point{}
 	w.scroll.steps = image.Point{}
 	w.ProcessEvent(pointer.Event{
-		Kind:      pointer.Scroll,
-		Source:    pointer.Mouse,
-		Buttons:   w.pointerBtns,
-		Position:  w.lastPos,
-		Scroll:    total,
-		Wheel:     wheel,
-		Time:      w.scroll.time,
-		Modifiers: w.disp.xkb.Modifiers(),
+		Kind:       pointer.Scroll,
+		Source:     pointer.Mouse,
+		Buttons:    w.pointerBtns,
+		Position:   w.lastPos,
+		Scroll:     total,
+		Wheel:      wheel,
+		Continuous: continuous,
+		Time:       w.scroll.time,
+		Modifiers:  w.disp.xkb.Modifiers(),
 	})
 }
 

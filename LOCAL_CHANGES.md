@@ -314,6 +314,17 @@ Run the focused check from the project root:
   - macOS, Android, iOS and js leave it unset; `gio-mw` tells a notch there
     by its size, as before.
 
+- `pointer.Event.Continuous` tells scrolling by the motion of a device, a
+  trackpoint's say, from a touchpad's, so that a list can scale the two
+  apart (`gio-mw/widget/scroll`, `ContinuousScale`): a trackpoint stops when
+  the stick is let go, with nothing like a touchpad's kinetic scrolling.
+  - `app/os_wayland.go`: set when the frame's `wl_pointer.axis_source` is
+    `continuous`, which libinput reports for a trackpoint's scrolling and a
+    mouse's with a button held, and for the fling Gio makes after it. The
+    source was ignored before.
+  - Other platforms leave it unset. On X11, XInput 2 tells no source of
+    smooth scrolling.
+
 - Smooth scrolling on X11, through XInput 2.1, which upstream Gio does not
   take: a touchpad scrolled by the notches of a wheel the server made of it,
   in steps of a notch.
