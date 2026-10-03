@@ -195,8 +195,11 @@ func PushOpacity(o *op.Ops, opacity float32) OpacityStack {
 // The layer operations are drawn to a separate image, which is blurred and
 // then fills the clip area in effect at PushBlur, not the area of the layer
 // operations: draw the backdrop beyond the clip, by about radius, so that its
-// blurred edges fall outside. The layer is only seen: input operations in it
-// are ignored, so that it may repeat content drawn elsewhere.
+// blurred edges fall outside. That clip does not clip the layer operations,
+// only clips pushed after PushBlur do: the blurred image stays the same when
+// the clip changes, as that of a panel opening does. The layer is only seen:
+// input operations in it are ignored, so that it may repeat content drawn
+// elsewhere.
 func PushBlur(o *op.Ops, radius float32) OpacityStack {
 	if radius < 0 {
 		radius = 0

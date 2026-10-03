@@ -95,7 +95,10 @@ type opacityLayer struct {
 	// composite indexes the operation that shows a blur layer: it fills
 	// the clip of the PushBlur with the blurred layer.
 	composite int
-	parent    int
+	// outer is the clip in effect where a blur layer was pushed, which its
+	// own operations are not clipped by, restored where it is popped.
+	outer  *pathOp
+	parent int
 	// depth of the opacity stack. Layers of equal depth are
 	// independent and may be packed into one atlas.
 	depth int
@@ -1150,16 +1153,27 @@ loop:
 				opacity:   opacity,
 				blur:      blur,
 				composite: composite,
+				outer:     state.cpath,
 				parent:    parent,
 				depth:     depth,
 				opStart:   len(d.imageOps),
 			})
 			d.opacityStack = append(d.opacityStack, lidx)
+			if blur > 0 {
+				// The operation above shows the layer in the clip; what
+				// the layer draws is clipped only by its own clips, so
+				// that it does not change with the clip, as that of a
+				// menu opening from a bottom corner does.
+				state.cpath = nil
+			}
 		case ops.TypePopOpacity:
 			n := len(d.opacityStack)
 			idx := d.opacityStack[n-1]
 			d.layers[idx].opEnd = len(d.imageOps)
 			d.opacityStack = d.opacityStack[:n-1]
+			if d.layers[idx].blur > 0 {
+				state.cpath = d.layers[idx].outer
+			}
 
 		case ops.TypeStroke:
 			quads.key.strokeWidth = decodeStrokeOp(encOp.Data)

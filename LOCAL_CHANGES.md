@@ -133,6 +133,13 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
     each frame, as a menu's clip does while it opens, made the blurred image
     swim, and the text under the menu flicker. Test in the messenger:
     `TestBlurDoesNotSwimWithTheSizeOfItsClip`.
+  - `gpu/gpu.go`: the operations of a blur layer are not clipped by the clip in
+    effect at `PushBlur`, only by their own clips, as its documentation says:
+    the layer is the backdrop as drawn, with its margin, not the part of it the
+    clip shows. A menu opening from a bottom or a right corner moves the top or
+    the left edge of its clip every frame, which moved the layer, and the text
+    under the menu flickered. Test in the messenger:
+    `TestBlurDoesNotSwimWithTheCornerAMenuOpensFrom`.
   - `gpu/gpu.go`: a full-screen opaque fill no longer drops earlier operations
     once there are layers, not only while one is open: layers index them.
   - `io/input/router.go`: operations inside a blur layer take no input and
