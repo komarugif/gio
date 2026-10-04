@@ -479,3 +479,8 @@ void gio_init() {
 												   object:nil];
 	}
 }
+
+// GioTitlebarBackdrop marks the view behind the system's title bar, which
+// setWindowTransparent adds to a transparent window.
+@implementation GioTitlebarBackdrop
+@end

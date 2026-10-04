@@ -53,7 +53,8 @@ type Config struct {
 	// unmapped X11 window. Unlike focus loss, it is a reason to pause drawing.
 	Suspended bool
 	// Transparent reports whether the window lets the desktop show through
-	// where its content is not opaque. It is supported on Wayland; elsewhere
+	// where its content is not opaque. It is supported on Wayland, Windows and
+	// macOS (without blur); elsewhere
 	// the window stays opaque and Transparent reads false.
 	Transparent bool
 	// BlurBehind reports whether the compositor blurs what shows through a

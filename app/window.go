@@ -1063,7 +1063,7 @@ func Decorated(enabled bool) Option {
 // content is not opaque. Content then starts each frame transparent rather
 // than white, so it paints its own background, translucent or not.
 //
-// Transparent is supported on Wayland. Other platforms ignore it and report
+// Transparent is supported on Wayland, Windows and macOS. Other platforms ignore it and report
 // it off in [Config].
 func Transparent(enabled bool) Option {
 	return func(_ unit.Metric, cnf *Config) {
