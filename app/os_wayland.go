@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"gioui.org/app/internal/xkb"
 	"gioui.org/f32"
 	"gioui.org/internal/fling"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
@@ -153,8 +155,8 @@ type wlSeat struct {
 	offers map[*C.struct_wl_data_offer][]string
 	// clipboard is the wl_data_offer for the clipboard.
 	clipboard *C.struct_wl_data_offer
-	// mimeType is the chosen mime type of clipboard.
-	mimeType string
+	// clipMimes are the mime types the clipboard's offer has.
+	clipMimes []string
 	// source represents the clipboard content of the most recent
 	// clipboard write, if any.
 	source *C.struct_wl_data_source
@@ -348,25 +350,45 @@ func (d *wlDisplay) writeClipboard(mime string, content []byte) error {
 	return nil
 }
 
-func (d *wlDisplay) readClipboard() (io.ReadCloser, error) {
+// readClipboard reads the first of types the clipboard has.
+func (d *wlDisplay) readClipboard(types []string) (io.ReadCloser, string, error) {
 	s := d.seat
-	if s == nil {
-		return nil, nil
+	if s == nil || s.clipboard == nil {
+		return nil, "", nil
 	}
-	if s.clipboard == nil {
-		return nil, nil
+	mime, typ := "", ""
+	for _, t := range types {
+		var wants []string
+		switch t {
+		case clipboard.TypeText:
+			wants = clipboardMimeTypes
+		case clipboard.TypeURIList, clipboard.TypePNG:
+			wants = []string{t}
+		}
+		for _, want := range wants {
+			if slices.Contains(s.clipMimes, want) {
+				mime, typ = want, t
+				break
+			}
+		}
+		if mime != "" {
+			break
+		}
+	}
+	if mime == "" {
+		return nil, "", nil
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// wl_data_offer_receive performs and implicit dup(2) of the write end
 	// of the pipe. Close our version.
 	defer w.Close()
-	cmimeType := C.CString(s.mimeType)
+	cmimeType := C.CString(mime)
 	defer C.free(unsafe.Pointer(cmimeType))
 	C.wl_data_offer_receive(s.clipboard, cmimeType, C.int(w.Fd()))
-	return r, nil
+	return r, typ, nil
 }
 
 func (d *wlDisplay) createNativeWindow(options []Option) (*window, error) {
@@ -828,17 +850,9 @@ func gio_onDataDeviceDrop(data unsafe.Pointer, dataDev *C.struct_wl_data_device)
 func gio_onDataDeviceSelection(data unsafe.Pointer, dataDev *C.struct_wl_data_device, id *C.struct_wl_data_offer) {
 	s := callbackLoad(data).(*wlSeat)
 	defer s.flushOffers()
-	s.clipboard = nil
-loop:
-	for _, want := range clipboardMimeTypes {
-		for _, got := range s.offers[id] {
-			if want != got {
-				continue
-			}
-			s.clipboard = id
-			s.mimeType = got
-			break loop
-		}
+	s.clipboard, s.clipMimes = nil, nil
+	if id != nil && len(s.offers[id]) > 0 {
+		s.clipboard, s.clipMimes = id, s.offers[id]
 	}
 }
 
@@ -1110,21 +1124,24 @@ func gio_onPointerAxisDiscrete(data unsafe.Pointer, p *C.struct_wl_pointer, axis
 	}
 }
 
-func (w *window) ReadClipboard() {
+func (w *window) ReadClipboard(types []string) {
 	if w.disp.readClipClose != nil {
 		return
 	}
 	w.disp.readClipClose = make(chan struct{})
-	r, err := w.disp.readClipboard()
-	if r == nil || err != nil {
-		return
+	r, typ, err := w.disp.readClipboard(types)
+	if err != nil {
+		r, typ = nil, ""
 	}
 	// Don't let slow clipboard transfers block event loop.
 	go func() {
-		defer r.Close()
-		data, _ := io.ReadAll(r)
+		var data []byte
+		if r != nil {
+			defer r.Close()
+			data, _ = io.ReadAll(r)
+		}
 		e := transfer.DataEvent{
-			Type: "application/text",
+			Type: typ,
 			Open: func() io.ReadCloser {
 				return io.NopCloser(bytes.NewReader(data))
 			},

@@ -29,9 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"io"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -41,7 +39,6 @@ import (
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/system"
-	"gioui.org/io/transfer"
 	"gioui.org/op"
 	"gioui.org/unit"
 
@@ -120,6 +117,8 @@ type x11Window struct {
 
 	// dnd is the drag of files over the window.
 	dnd x11Drag
+	// clipRead is a read of the clipboard (os_x11_clipboard.go).
+	clipRead x11ClipRead
 
 	// xi2 is set when the window takes its pointer events through
 	// XInput 2, for smooth scrolling (os_x11_xi2.go).
@@ -163,11 +162,6 @@ func (w *x11Window) NewContext() (context, error) {
 
 func (w *x11Window) SetAnimating(anim bool) {
 	w.animating = anim
-}
-
-func (w *x11Window) ReadClipboard() {
-	C.XDeleteProperty(w.x, w.xw, w.atoms.clipboardContent)
-	C.XConvertSelection(w.x, w.atoms.clipboard, w.atoms.utf8string, w.atoms.clipboardContent, w.xw, C.CurrentTime)
 }
 
 func (w *x11Window) WriteClipboard(mime string, s []byte) {
@@ -757,29 +751,9 @@ func (h *x11EventHandler) handleEvents() bool {
 				w.dropSelection(cevt)
 				break
 			}
-			prop := w.atoms.clipboardContent
-			if cevt.property != prop {
-				break
-			}
-			if cevt.selection != w.atoms.clipboard {
-				break
-			}
-			var text C.XTextProperty
-			if st := C.XGetTextProperty(w.x, w.xw, &text, prop); st == 0 {
-				// Failed; ignore.
-				break
-			}
-			if text.format != 8 || text.encoding != w.atoms.utf8string {
-				// Ignore non-utf-8 encoded strings.
-				break
-			}
-			str := C.GoStringN((*C.char)(unsafe.Pointer(text.value)), C.int(text.nitems))
-			w.ProcessEvent(transfer.DataEvent{
-				Type: "application/text",
-				Open: func() io.ReadCloser {
-					return io.NopCloser(strings.NewReader(str))
-				},
-			})
+			w.clipboardNotify(cevt)
+		case C.PropertyNotify:
+			w.clipboardProperty((*C.XPropertyEvent)(unsafe.Pointer(xev)))
 		case C.SelectionRequest:
 			cevt := (*C.XSelectionRequestEvent)(unsafe.Pointer(xev))
 			if (cevt.selection != w.atoms.clipboard && cevt.selection != w.atoms.primary) || cevt.property == C.None {
@@ -913,7 +887,8 @@ func newX11Window(gioWin *callbacks, options []Option) error {
 			C.KeyPressMask | C.KeyReleaseMask | // keyboard
 			C.ButtonPressMask | C.ButtonReleaseMask | // mouse clicks
 			C.PointerMotionMask | // mouse movement
-			C.StructureNotifyMask, // resize
+			C.StructureNotifyMask | // resize
+			C.PropertyChangeMask, // clipboard content in parts
 		background_pixmap: C.None,
 		override_redirect: C.False,
 	}

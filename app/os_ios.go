@@ -284,7 +284,7 @@ func onTouch(h C.uintptr_t, last C.int, touchRef C.CFTypeRef, phase C.NSInteger,
 	})
 }
 
-func (w *window) ReadClipboard() {
+func (w *window) ReadClipboard(types []string) {
 	cstr := C.readClipboard()
 	defer C.CFRelease(cstr)
 	content := nsstringToString(cstr)

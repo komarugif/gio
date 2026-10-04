@@ -275,8 +275,8 @@ func (w *Window) updateState() {
 	if mime, txt, ok := q.WriteClipboard(); ok {
 		w.driver.WriteClipboard(mime, txt)
 	}
-	if q.ClipboardRequested() {
-		w.driver.ReadClipboard()
+	if types, ok := q.ClipboardRequested(); ok {
+		w.driver.ReadClipboard(types)
 	}
 	oldState := w.imeState
 	newState := oldState

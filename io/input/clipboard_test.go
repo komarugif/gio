@@ -4,6 +4,7 @@ package input
 
 import (
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,6 +73,37 @@ func TestQueueProcessReadClipboard(t *testing.T) {
 	assertClipboardReadCmd(t, r, 0)
 }
 
+// Handlers that wait together are asked the types they want, the first
+// handler's first; one that asks for more while waiting asks again. Each
+// gets the event only of the types it filters for, and none waits after it.
+func TestClipboardReadTypes(t *testing.T) {
+	r, handlers := new(Router), make([]int, 2)
+	r.Source().Execute(clipboard.ReadCmd{Tag: &handlers[0], Types: []string{clipboard.TypeURIList, clipboard.TypePNG}})
+	r.Source().Execute(clipboard.ReadCmd{Tag: &handlers[1]})
+	types, ok := r.ClipboardRequested()
+	if want := []string{clipboard.TypeURIList, clipboard.TypePNG, clipboard.TypeText}; !ok || !slices.Equal(types, want) {
+		t.Fatalf("asked for %v, %v; want %v", types, ok, want)
+	}
+	if _, ok := r.ClipboardRequested(); ok {
+		t.Fatal("asked twice")
+	}
+	r.Source().Execute(clipboard.ReadCmd{Tag: &handlers[0], Types: []string{clipboard.TypePNG}})
+	if _, ok := r.ClipboardRequested(); ok {
+		t.Fatal("asked again for a type asked for")
+	}
+
+	r.Queue(transfer.DataEvent{Type: clipboard.TypePNG, Open: func() io.ReadCloser { return io.NopCloser(strings.NewReader("png")) }})
+	assertEventTypeSequence(t, events(r, -1, transfer.TargetFilter{Target: &handlers[0], Type: clipboard.TypePNG}), transfer.DataEvent{})
+	assertEventTypeSequence(t, events(r, -1, transfer.TargetFilter{Target: &handlers[1], Type: clipboard.TypeText}))
+	assertClipboardReadCmd(t, r, 0)
+
+	// The next read asks for its own types only.
+	r.Source().Execute(clipboard.ReadCmd{Tag: &handlers[1]})
+	if types, _ := r.ClipboardRequested(); !slices.Equal(types, []string{clipboard.TypeText}) {
+		t.Fatalf("asked for %v", types)
+	}
+}
+
 func TestQueueProcessWriteClipboard(t *testing.T) {
 	r := new(Router)
 
@@ -92,7 +124,7 @@ func assertClipboardReadCmd(t *testing.T, router *Router, expected int) {
 	if got := len(router.state().receivers); got != expected {
 		t.Errorf("unexpected %d receivers, got %d", expected, got)
 	}
-	if router.ClipboardRequested() != (expected > 0) {
+	if _, ok := router.ClipboardRequested(); ok != (expected > 0) {
 		t.Error("missing requests")
 	}
 }
@@ -102,7 +134,7 @@ func assertClipboardReadDuplicated(t *testing.T, router *Router, expected int) {
 	if len(router.state().receivers) != expected {
 		t.Error("receivers removed")
 	}
-	if router.ClipboardRequested() != false {
+	if _, ok := router.ClipboardRequested(); ok {
 		t.Error("duplicated requests")
 	}
 }

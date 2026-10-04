@@ -49,3 +49,11 @@ func TestDropEventsQueue(t *testing.T) {
 		t.Fatalf("one more event: %#v", e)
 	}
 }
+
+func TestURIListOfWindowsPaths(t *testing.T) {
+	got := uriList([]string{`C:\Users\a b\pic.png`, `\\server\share\doc.pdf`})
+	want := "file:///C:/Users/a%20b/pic.png\r\nfile://server/share/doc.pdf\r\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

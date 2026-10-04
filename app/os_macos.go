@@ -396,7 +396,7 @@ func (w *window) contextView() C.CFTypeRef {
 	return w.view
 }
 
-func (w *window) ReadClipboard() {
+func (w *window) ReadClipboard(types []string) {
 	cstr := C.readClipboard()
 	if cstr != 0 {
 		defer C.CFRelease(cstr)

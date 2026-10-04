@@ -561,7 +561,7 @@ func (q *Router) executeCommand(c Command) stateChange {
 	case clipboard.WriteCmd:
 		q.cqueue.ProcessWriteClipboard(req)
 	case clipboard.ReadCmd:
-		state.clipboardState = q.cqueue.ProcessReadClipboard(state.clipboardState, req.Tag)
+		state.clipboardState = q.cqueue.ProcessReadClipboard(state.clipboardState, req)
 	case pointer.GrabCmd:
 		state.pointerState, evts = q.pointer.queue.grab(state.pointerState, req)
 	case op.InvalidateCmd:
@@ -739,8 +739,9 @@ func (q *Router) WriteClipboard() (mime string, content []byte, ok bool) {
 }
 
 // ClipboardRequested reports if any new handler is waiting
-// to read the clipboard.
-func (q *Router) ClipboardRequested() bool {
+// to read the clipboard, and the types of content wanted, the most wanted
+// first (see clipboard.ReadCmd).
+func (q *Router) ClipboardRequested() ([]string, bool) {
 	return q.cqueue.ClipboardRequested(q.lastState().clipboardState)
 }
 

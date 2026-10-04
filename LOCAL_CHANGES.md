@@ -256,6 +256,20 @@ Run the focused check from the project root:
     `CF_DIB` (`app/clipboard_image.go`, bottom-up BGRA) for other programs.
   - macOS, iOS, Android and js still take text only.
 
+- Files and pictures read from the clipboard, for Ctrl+V in the messenger:
+  `clipboard.ReadCmd.Types` (`TypeText`, `TypeURIList`, `TypePNG`), the
+  event's `Type` the first the clipboard has, empty for none; a read always
+  ends with an event (before, an empty clipboard left it waiting).
+  - `app/os_x11_clipboard.go`: TARGETS, then the type; INCR for large data
+    (`PropertyChangeMask` on the window). Checked live under Xvfb with xclip:
+    a 3.9 MB PNG, a uri-list, text, and a copy inside the window.
+  - `app/os_wayland.go`: the selection offer is kept with all its types,
+    and the type chosen at the read.
+  - `app/os_windows_clipboard.go`: `CF_HDROP` as a uri-list, the "PNG"
+    format, else `CF_DIBV5`/`CF_DIB` encoded as PNG (`dibToPNG`).
+  - macOS, iOS, Android and js read text only. Tests: `TestClipboardReadTypes`,
+    `TestDIBToPNG`, `TestURIListOfWindowsPaths`.
+
 - Files dragged from other programs (`app/drop.go`, `DropEvent`), for the
   messenger's areas that files are dropped on over a chat. A drag over a
   window is told with `DropEnter`, `DropMove` and then `DropLeave` or `Drop`,

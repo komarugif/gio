@@ -88,3 +88,19 @@ func localHost(host string) bool {
 	name, err := os.Hostname()
 	return err == nil && strings.EqualFold(host, name)
 }
+
+// uriList writes Windows paths as a text/uri-list.
+func uriList(paths []string) string {
+	var b strings.Builder
+	for _, p := range paths {
+		u := url.URL{Scheme: "file", Path: strings.ReplaceAll(p, `\`, "/")}
+		if strings.HasPrefix(u.Path, "//") {
+			host, rest, _ := strings.Cut(u.Path[2:], "/")
+			u.Host, u.Path = host, "/"+rest
+		} else {
+			u.Path = "/" + u.Path
+		}
+		b.WriteString(u.String() + "\r\n")
+	}
+	return b.String()
+}

@@ -203,8 +203,10 @@ type driver interface {
 	ShowTextInput(show bool)
 	SetInputHint(mode key.InputHint)
 	NewContext() (context, error)
-	// ReadClipboard requests the clipboard content.
-	ReadClipboard()
+	// ReadClipboard requests the clipboard content of the first of types
+	// it has (see clipboard.ReadCmd), delivered as a transfer.DataEvent,
+	// with an empty Type if it has none.
+	ReadClipboard(types []string)
 	// WriteClipboard requests a clipboard write.
 	WriteClipboard(mime string, s []byte)
 	// Configure the window.

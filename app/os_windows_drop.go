@@ -29,7 +29,6 @@ var (
 	_RevokeDragDrop    = ole32.NewProc("RevokeDragDrop")
 	_ReleaseStgMedium  = ole32.NewProc("ReleaseStgMedium")
 	shell32            = syswin.NewLazySystemDLL("shell32.dll")
-	_DragQueryFileW    = shell32.NewProc("DragQueryFileW")
 	dropTargetVtblOnce sync.Once
 	dropTargetVtbl     *dropTargetMethods
 	dropTargets        sync.Map // this pointer → *dropTarget
@@ -238,18 +237,7 @@ func dataObjectPaths(data *dataObject) []string {
 	if medium.tymed != _TYMED_HGLOBAL || medium.handle == 0 {
 		return nil
 	}
-	count, _, _ := _DragQueryFileW.Call(medium.handle, 0xffffffff, 0, 0)
-	var paths []string
-	for i := uintptr(0); i < count; i++ {
-		n, _, _ := _DragQueryFileW.Call(medium.handle, i, 0, 0)
-		if n == 0 {
-			continue
-		}
-		buf := make([]uint16, n+1)
-		_DragQueryFileW.Call(medium.handle, i, uintptr(unsafe.Pointer(&buf[0])), n+1)
-		paths = append(paths, syscall.UTF16ToString(buf))
-	}
-	return paths
+	return hdropPaths(medium.handle)
 }
 
 // guid is a COM interface identifier.

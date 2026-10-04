@@ -859,7 +859,7 @@ func (w *window) SetAnimating(anim bool) {
 	}
 }
 
-func (w *window) ReadClipboard() {
+func (w *window) ReadClipboard(types []string) {
 	if w.clipboard.IsUndefined() {
 		return
 	}

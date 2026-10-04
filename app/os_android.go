@@ -1335,7 +1335,7 @@ func (w *window) WriteClipboard(mime string, s []byte) {
 	})
 }
 
-func (w *window) ReadClipboard() {
+func (w *window) ReadClipboard(types []string) {
 	runInJVM(javaVM(), func(env *C.JNIEnv) {
 		c, err := callStaticObjectMethod(env, android.gioCls, android.mreadClipboard,
 			jvalue(android.appCtx))

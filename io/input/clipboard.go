@@ -18,6 +18,7 @@ type clipboardState struct {
 type clipboardQueue struct {
 	// request avoid read clipboard every frame while waiting.
 	requested bool
+	types     []string
 	mime      string
 	text      []byte
 }
@@ -34,11 +35,14 @@ func (q *clipboardQueue) WriteClipboard() (mime string, content []byte, ok bool)
 }
 
 // ClipboardRequested reports if any new handler is waiting
-// to read the clipboard.
-func (q *clipboardQueue) ClipboardRequested(state clipboardState) bool {
+// to read the clipboard, and the types of content wanted.
+func (q *clipboardQueue) ClipboardRequested(state clipboardState) ([]string, bool) {
 	req := len(state.receivers) > 0 && q.requested
 	q.requested = false
-	return req
+	if !req {
+		return nil, false
+	}
+	return q.types, true
 }
 
 func (q *clipboardQueue) Push(state clipboardState, e event.Event) (clipboardState, []taggedEvent) {
@@ -47,6 +51,7 @@ func (q *clipboardQueue) Push(state clipboardState, e event.Event) (clipboardSta
 		evts = append(evts, taggedEvent{tag: r, event: e})
 	}
 	state.receivers = nil
+	q.types = nil
 	return state, evts
 }
 
@@ -60,12 +65,22 @@ func (q *clipboardQueue) ProcessWriteClipboard(req clipboard.WriteCmd) {
 	q.text = content
 }
 
-func (q *clipboardQueue) ProcessReadClipboard(state clipboardState, tag event.Tag) clipboardState {
-	if slices.Contains(state.receivers, tag) {
+func (q *clipboardQueue) ProcessReadClipboard(state clipboardState, req clipboard.ReadCmd) clipboardState {
+	types := req.Types
+	if len(types) == 0 {
+		types = []string{clipboard.TypeText}
+	}
+	for _, t := range types {
+		if !slices.Contains(q.types, t) {
+			q.types = append(q.types, t)
+			q.requested = true
+		}
+	}
+	if slices.Contains(state.receivers, req.Tag) {
 		return state
 	}
 	n := len(state.receivers)
-	state.receivers = append(state.receivers[:n:n], tag)
+	state.receivers = append(state.receivers[:n:n], req.Tag)
 	q.requested = true
 	return state
 }

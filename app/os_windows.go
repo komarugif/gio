@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"gioui.org/io/transfer"
@@ -819,40 +820,16 @@ func (w *window) NewContext() (context, error) {
 	return nil, errors.New("NewContext: no available GPU drivers")
 }
 
-func (w *window) ReadClipboard() {
-	w.readClipboard()
-}
-
-func (w *window) readClipboard() (cerr error) {
-	defer func() {
-		if cerr != nil {
-			w.processDataEvent("")
-		}
-	}()
-
-	if err := windows.OpenClipboard(w.hwnd); err != nil {
-		return err
+func (w *window) ReadClipboard(types []string) {
+	typ, content := "", []byte(nil)
+	if windows.OpenClipboard(w.hwnd) == nil {
+		typ, content = clipboardContent(types)
+		windows.CloseClipboard()
 	}
-	defer windows.CloseClipboard()
-	mem, err := windows.GetClipboardData(windows.CF_UNICODETEXT)
-	if err != nil {
-		return err
-	}
-	ptr, err := windows.GlobalLock(mem)
-	if err != nil {
-		return err
-	}
-	defer windows.GlobalUnlock(mem)
-	content := gowindows.UTF16PtrToString((*uint16)(unsafe.Pointer(ptr)))
-	w.processDataEvent(content)
-	return nil
-}
-
-func (w *window) processDataEvent(content string) {
 	w.ProcessEvent(transfer.DataEvent{
-		Type: "application/text",
+		Type: typ,
 		Open: func() io.ReadCloser {
-			return io.NopCloser(strings.NewReader(content))
+			return io.NopCloser(bytes.NewReader(content))
 		},
 	})
 }
