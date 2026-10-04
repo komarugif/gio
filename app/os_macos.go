@@ -155,6 +155,21 @@ static void setWindowTitlebarAppearsTransparent(CFTypeRef windowRef, int transpa
 @interface GioTitlebarBackdrop : NSVisualEffectView
 @end
 
+static void setWindowDarkFrame(CFTypeRef windowRef, int dark) {
+	@autoreleasepool {
+		NSWindow *window = (__bridge NSWindow *)windowRef;
+		window.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+	}
+}
+
+static void setWindowFrameColor(CFTypeRef windowRef, double r, double g, double b) {
+	@autoreleasepool {
+		NSWindow *window = (__bridge NSWindow *)windowRef;
+		window.backgroundColor = [NSColor colorWithSRGBRed:r green:g blue:b alpha:1];
+		window.titlebarAppearsTransparent = YES;
+	}
+}
+
 static void setWindowTransparent(CFTypeRef windowRef, CFTypeRef viewRef, int transparent, int blur) {
 	@autoreleasepool {
 		NSWindow *window = (__bridge NSWindow *)windowRef;
@@ -552,8 +567,15 @@ func (w *window) Configure(options []Option) {
 	C.setWindowStyleMask(window, mask)
 	blur := cnf.Transparent && cnf.BlurBehind
 	C.setWindowTransparent(window, w.view, C.int(b2i(cnf.Transparent)), C.int(b2i(blur)))
+	if cnf.Decorated && !cnf.Transparent && cnf.FrameColor.A != 0 {
+		c := cnf.FrameColor
+		C.setWindowFrameColor(window, C.double(c.R)/255, C.double(c.G)/255, C.double(c.B)/255)
+	}
+	w.config.FrameColor = cnf.FrameColor
 	effects := w.config.Transparent != cnf.Transparent || w.config.BlurBehind != blur
 	w.config.Transparent, w.config.BlurBehind = cnf.Transparent, blur
+	C.setWindowDarkFrame(window, C.int(b2i(cnf.DarkFrame)))
+	w.config.DarkFrame = cnf.DarkFrame
 	C.setWindowStandardButtonHidden(window, C.NSWindowCloseButton, barTrans)
 	C.setWindowStandardButtonHidden(window, C.NSWindowMiniaturizeButton, barTrans)
 	C.setWindowStandardButtonHidden(window, C.NSWindowZoomButton, barTrans)

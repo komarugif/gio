@@ -57,6 +57,13 @@ type Config struct {
 	// macOS (without blur); elsewhere
 	// the window stays opaque and Transparent reads false.
 	Transparent bool
+	// DarkFrame asks for the dark look of the system's window frame, where the
+	// system draws one and lets the program choose it (macOS); false asks for
+	// the light one.
+	DarkFrame bool
+	// FrameColor, when not transparent black, is the color of the system's
+	// window frame (macOS), which then draws nothing of its own over it.
+	FrameColor color.NRGBA
 	// BlurBehind reports whether the compositor blurs what shows through a
 	// transparent window. It is supported on Wayland compositors with the
 	// ext-background-effect-v1 protocol, such as KWin 6.7.

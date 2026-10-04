@@ -1059,6 +1059,23 @@ func Decorated(enabled bool) Option {
 	}
 }
 
+// DarkFrame picks the dark or the light look of the system's window frame,
+// whatever the system's own scheme is. Only macOS takes it.
+func DarkFrame(enabled bool) Option {
+	return func(_ unit.Metric, cnf *Config) {
+		cnf.DarkFrame = enabled
+	}
+}
+
+// FrameColor colors the system's window frame, where the system lets the
+// program (macOS), so that it matches the content. Transparent black, the
+// zero value, leaves the system's own look.
+func FrameColor(c color.NRGBA) Option {
+	return func(_ unit.Metric, cnf *Config) {
+		cnf.FrameColor = c
+	}
+}
+
 // Transparent asks for a window that lets the desktop show through where its
 // content is not opaque. Content then starts each frame transparent rather
 // than white, so it paints its own background, translucent or not.

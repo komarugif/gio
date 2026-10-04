@@ -17,6 +17,15 @@ The root go.mod selects this copy; the shared Go module cache is unchanged.
   xkbcommon adds up: with three layouts, every one but the first was the first.
   `TestWaylandLayoutGroups` types with three layouts.
 
+- `app.DarkFrame` / `Config.DarkFrame` pick the dark or the light look of the
+  system's window frame, which on macOS follows the system's scheme, not the
+  program's theme (a light theme under a dark system kept a dark title bar).
+  `app/os_macos.go` sets `NSWindow.appearance`; other platforms ignore it.
+  `appwindow.Window.SetFrameDark` repeats it from the theme.
+  `app.FrameColor` / `Config.FrameColor` color the frame as the content: on
+  macOS the window gets that background and a transparent title bar, so the
+  two match (not for a transparent window, which has its own backdrop).
+
 - Transparent windows (`app.Transparent`, `app.BlurBehind`, `Config.Transparent`,
   `Config.BlurBehind`), for the messenger's photo viewer window:
   - `app/window.go`: a window whose driver reports `Config.Transparent` starts each
