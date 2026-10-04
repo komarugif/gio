@@ -64,14 +64,16 @@ __attribute__ ((visibility ("hidden"))) CALayer *gio_layerFactory(BOOL presentWi
 
 static void handleMouse(GioView *view, NSEvent *event, int typ, CGFloat dx, CGFloat dy) {
 	NSPoint p = [view convertPoint:[event locationInWindow] fromView:nil];
-	if (!event.hasPreciseScrollingDeltas) {
-		// dx and dy are in rows and columns.
-		dx *= 10;
-		dy *= 10;
+	int wheel = 0;
+	if (typ == MOUSE_SCROLL && !event.hasPreciseScrollingDeltas) {
+		// A wheel's notches: dx and dy are in rows and columns.
+		wheel = 1;
+		dx *= 40;
+		dy *= 40;
 	}
 	// Origin is in the lower left corner. Convert to upper left.
 	CGFloat height = view.bounds.size.height;
-	gio_onMouse(view.handle, (__bridge CFTypeRef)event, typ, event.buttonNumber, p.x, height - p.y, dx, dy, [event timestamp], [event modifierFlags]);
+	gio_onMouse(view.handle, (__bridge CFTypeRef)event, typ, event.buttonNumber, p.x, height - p.y, dx, dy, wheel, [event timestamp], [event modifierFlags]);
 }
 
 @implementation GioView

@@ -311,8 +311,14 @@ Run the focused check from the project root:
     joins when the wheel turns fast (−240, −360); a precision touchpad, its
     inertia and a free-spinning wheel send finer distances. Test:
     `TestIsWheelDelta`, with distances measured on Windows 11.
-  - macOS, Android, iOS and js leave it unset; `gio-mw` tells a notch there
-    by its size, as before.
+  - `app/os_macos.m`, `app/os_macos.go`: set when the `scrollWheel:` event
+    has no `hasPreciseScrollingDeltas`, a wheel's notches; a trackpad's
+    scrolling and its momentum leave it unset. Their distance, in rows, is
+    multiplied by 40 (it was 10, which scrolled a notch by a few pixels).
+    Before, `gio-mw` took a trackpad's fast swipe (40 pixels or more) for a
+    wheel and glided it, late and jerky.
+  - Android, iOS and js leave it unset; `gio-mw` tells a notch there by its
+    size, as before.
 
 - `pointer.Event.Continuous` tells scrolling by the motion of a device, a
   trackpoint's say, from a touchpad's, so that a list can scale the two
