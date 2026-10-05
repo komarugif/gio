@@ -440,3 +440,13 @@ Run the focused check from the project root:
     1.49.
   - `app/os_x11.go`: `_NET_WM_ICON`, leaving out sizes that would make the
     request longer than the server takes.
+
+- `gpu/gpu.go`: align a blur capture's top-left to the pixel grid of its
+  deepest downsampling level before packing layers. Moving an entire
+  capture (a bottom-anchored menu changing height) otherwise changed the
+  sampling phase and made static text flicker. This complements the earlier
+  exact 2:1 resampling and the separation of capture/composite clips; neither
+  is reverted. The visible composite keeps its original clip, and only up
+  to one grid cell of capture padding is added at the top/left.
+  `ui.TestBlurDoesNotSwimWhenMenuCaptureMoves` checks fixed screen pixels
+  through one-pixel shifts and across a grid boundary.
