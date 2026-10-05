@@ -152,6 +152,64 @@ static void setWindowTitlebarAppearsTransparent(CFTypeRef windowRef, int transpa
 	}
 }
 
+@interface GioTitlebarBackdrop : NSVisualEffectView
+@end
+
+static void setWindowDarkFrame(CFTypeRef windowRef, int dark) {
+	@autoreleasepool {
+		NSWindow *window = (__bridge NSWindow *)windowRef;
+		window.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+	}
+}
+
+static void setWindowFrameColor(CFTypeRef windowRef, double r, double g, double b) {
+	@autoreleasepool {
+		NSWindow *window = (__bridge NSWindow *)windowRef;
+		window.backgroundColor = [NSColor colorWithSRGBRed:r green:g blue:b alpha:1];
+		window.titlebarAppearsTransparent = YES;
+	}
+}
+
+static void setWindowTransparent(CFTypeRef windowRef, CFTypeRef viewRef, int transparent, int blur) {
+	@autoreleasepool {
+		NSWindow *window = (__bridge NSWindow *)windowRef;
+		NSView *view = (__bridge NSView *)viewRef;
+		window.opaque = !transparent;
+		window.backgroundColor = transparent ? [NSColor clearColor] : [NSColor windowBackgroundColor];
+		view.layer.opaque = !transparent;
+		// A native backdrop behind the content: the whole window, blurring
+		// what is behind it, or, without blur, only the system's title bar,
+		// which draws no background of its own over a clear window.
+		NSView *frame = view.superview;
+		NSVisualEffectView *bar = nil;
+		for (NSView *v in frame.subviews) {
+			if ([v isKindOfClass:[GioTitlebarBackdrop class]]) {
+				bar = (NSVisualEffectView *)v;
+			}
+		}
+		if (!transparent || (window.styleMask & NSWindowStyleMaskFullSizeContentView)) {
+			[bar removeFromSuperview];
+			return;
+		}
+		NSRect r;
+		if (blur) {
+			r = frame.bounds;
+		} else {
+			CGFloat top = NSMaxY(view.frame);
+			r = NSMakeRect(0, top, frame.bounds.size.width, frame.bounds.size.height - top);
+		}
+		if (bar == nil) {
+			bar = [[GioTitlebarBackdrop alloc] initWithFrame:r];
+			bar.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+			bar.state = NSVisualEffectStateActive;
+			[frame addSubview:bar positioned:NSWindowBelow relativeTo:view];
+		}
+		bar.material = blur ? NSVisualEffectMaterialUnderWindowBackground : NSVisualEffectMaterialTitlebar;
+		bar.autoresizingMask = blur ? (NSViewWidthSizable | NSViewHeightSizable) : (NSViewWidthSizable | NSViewMinYMargin);
+		bar.frame = r;
+	}
+}
+
 static void setWindowStandardButtonHidden(CFTypeRef windowRef, NSWindowButton btn, int hide) {
 	@autoreleasepool {
 		NSWindow *window = (__bridge NSWindow *)windowRef;
@@ -507,12 +565,33 @@ func (w *window) Configure(options []Option) {
 	C.setWindowTitlebarAppearsTransparent(window, barTrans)
 	C.setWindowTitleVisibility(window, titleVis)
 	C.setWindowStyleMask(window, mask)
+	blur := cnf.Transparent && cnf.BlurBehind
+	C.setWindowTransparent(window, w.view, C.int(b2i(cnf.Transparent)), C.int(b2i(blur)))
+	if cnf.Decorated && !cnf.Transparent && cnf.FrameColor.A != 0 {
+		c := cnf.FrameColor
+		C.setWindowFrameColor(window, C.double(c.R)/255, C.double(c.G)/255, C.double(c.B)/255)
+	}
+	w.config.FrameColor = cnf.FrameColor
+	effects := w.config.Transparent != cnf.Transparent || w.config.BlurBehind != blur
+	w.config.Transparent, w.config.BlurBehind = cnf.Transparent, blur
+	C.setWindowDarkFrame(window, C.int(b2i(cnf.DarkFrame)))
+	w.config.DarkFrame = cnf.DarkFrame
 	C.setWindowStandardButtonHidden(window, C.NSWindowCloseButton, barTrans)
 	C.setWindowStandardButtonHidden(window, C.NSWindowMiniaturizeButton, barTrans)
 	C.setWindowStandardButtonHidden(window, C.NSWindowZoomButton, barTrans)
 	// When toggling the titlebar, the layer doesn't update its frame
 	// until the next resize. Force it.
 	C.resetLayerFrame(w.view)
+	if effects {
+		w.ProcessEvent(ConfigEvent{Config: w.config})
+	}
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (w *window) setTitle(title string) {
@@ -677,7 +756,7 @@ func gio_onText(h C.uintptr_t, cstr C.CFTypeRef) {
 }
 
 //export gio_onMouse
-func gio_onMouse(h C.uintptr_t, evt C.CFTypeRef, cdir C.int, cbtn C.NSInteger, x, y, dx, dy C.CGFloat, ti C.double, mods C.NSUInteger) {
+func gio_onMouse(h C.uintptr_t, evt C.CFTypeRef, cdir C.int, cbtn C.NSInteger, x, y, dx, dy C.CGFloat, wheel C.int, ti C.double, mods C.NSUInteger) {
 	w := windowFor(h)
 	t := time.Duration(float64(ti)*float64(time.Second) + .5)
 	xf, yf := float32(x)*w.scale, float32(y)*w.scale
@@ -722,6 +801,7 @@ func gio_onMouse(h C.uintptr_t, evt C.CFTypeRef, cdir C.int, cbtn C.NSInteger, x
 		Buttons:   w.pointerBtns,
 		Position:  pos,
 		Scroll:    f32.Point{X: dxf, Y: dyf},
+		Wheel:     wheel != 0,
 		Modifiers: convertMods(mods),
 	})
 }
