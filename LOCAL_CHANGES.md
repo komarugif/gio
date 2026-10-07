@@ -362,6 +362,16 @@ Run the focused check from the project root:
   - Other platforms leave it unset. On X11, XInput 2 tells no source of
     smooth scrolling.
 
+- `app/os_wayland.go`: the fling after a touchpad's scrolling draws at
+  once when it starts (`gio_onPointerFrame`, `flushFling`). It moves on
+  only in `draw`, and upstream asks for no frame when it starts: a window
+  that had drawn the last frame of the scrolling before `axis_stop` came
+  waited for no frame callback, and the fling stood still until the
+  pointer moved, which ends it. It went on only when the fingers left
+  while a frame was still being drawn, so it came often where frames
+  take long (the history) and seldom where they are quick (settings, the
+  article window). Not checked live here: this machine has no Wayland.
+
 - Smooth scrolling on X11, through XInput 2.1, which upstream Gio does not
   take: a touchpad scrolled by the notches of a wheel the server made of it,
   in steps of a notch.

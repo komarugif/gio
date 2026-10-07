@@ -1066,14 +1066,22 @@ func gio_onPointerFrame(data unsafe.Pointer, p *C.struct_wl_pointer) {
 		return
 	}
 	w.flushScroll()
-	w.flushFling()
+	if w.flushFling() {
+		// The fling moves on in draw, and nothing else may ask for one:
+		// a window that drew its last frame of the scrolling before the
+		// fingers left waits for no frame callback, and the fling would
+		// stand still until the pointer moved, which ends it.
+		w.draw(false)
+	}
 	// The axis source is told again with the axes of each frame.
 	w.scroll.continuous = false
 }
 
-func (w *window) flushFling() {
+// flushFling starts the fling after a touchpad's scrolling, once the
+// compositor told it ended; it tells whether one started.
+func (w *window) flushFling() bool {
 	if !w.fling.start {
-		return
+		return false
 	}
 	w.fling.start = false
 	estx, esty := w.fling.xExtrapolation.Estimate(), w.fling.yExtrapolation.Estimate()
@@ -1082,11 +1090,12 @@ func (w *window) flushFling() {
 	vel := float32(math.Sqrt(float64(estx.Velocity*estx.Velocity + esty.Velocity*esty.Velocity)))
 	_, c := w.getConfig()
 	if !w.fling.anim.Start(c, time.Now(), vel) {
-		return
+		return false
 	}
 	invDist := 1 / vel
 	w.fling.dir.X = estx.Velocity * invDist
 	w.fling.dir.Y = esty.Velocity * invDist
+	return true
 }
 
 //export gio_onPointerAxisSource
