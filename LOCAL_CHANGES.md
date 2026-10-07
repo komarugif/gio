@@ -273,6 +273,24 @@ Run the focused check from the project root:
     `CF_DIB` (`app/clipboard_image.go`, bottom-up BGRA) for other programs.
   - macOS, iOS, Android and js still take text only.
 
+- HTML on the clipboard beside text, for copying a rich message's blocks:
+  `clipboard.WriteCmd.HTML` (`TypeHTML`, "text/html"), taken by
+  `Router.WriteClipboardHTML`; a driver that can (`htmlClipboardWriter`)
+  offers both, the others put the text alone.
+  - `app/os_x11.go`: TARGETS has `text/html` while the window owns HTML,
+    sent as it is. Checked live under XFCE with an Xlib reader of the
+    selection.
+  - `app/os_wayland.go`: the data source offers `text/html` beside the
+    text types, and sends the HTML for it. Not checked live.
+  - `app/os_windows.go`, `app/clipboard_html.go`: `CF_UNICODETEXT` and the
+    registered "HTML Format", its header of byte offsets and the fragment's
+    comments around the document's body (`cfHTML`, `TestCFHTML`). Built
+    for Windows, not run there.
+  - `app/os_macos.go`: `NSPasteboardTypeString` and `NSPasteboardTypeHTML`.
+    Not built: macOS needs cgo.
+  - iOS, Android and js put the text alone. Test:
+    `TestQueueProcessWriteClipboardHTML`.
+
 - Files and pictures read from the clipboard, for Ctrl+V in the messenger:
   `clipboard.ReadCmd.Types` (`TypeText`, `TypeURIList`, `TypePNG`), the
   event's `Type` the first the clipboard has, empty for none; a read always

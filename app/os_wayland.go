@@ -162,6 +162,8 @@ type wlSeat struct {
 	source *C.struct_wl_data_source
 	// content is the data belonging to source.
 	content []byte
+	// html is content's HTML, offered beside it, or nil.
+	html []byte
 	// drag is the drag of files over a window.
 	drag wlDrag
 }
@@ -321,6 +323,11 @@ func newWLWindow(callbacks *callbacks, options []Option) error {
 }
 
 func (d *wlDisplay) writeClipboard(mime string, content []byte) error {
+	return d.writeClipboardHTML(mime, content, nil)
+}
+
+// writeClipboardHTML offers content, and html beside it when it is not nil.
+func (d *wlDisplay) writeClipboardHTML(mime string, content, html []byte) error {
 	s := d.seat
 	if s == nil {
 		return nil
@@ -330,16 +337,20 @@ func (d *wlDisplay) writeClipboard(mime string, content []byte) error {
 		C.wl_data_source_destroy(s.source)
 		s.source = nil
 		s.content = nil
+		s.html = nil
 	}
 	if d.dataDeviceManager == nil || s.dataDev == nil {
 		return nil
 	}
 	s.content = content
+	s.html = html
 	s.source = C.wl_data_device_manager_create_data_source(d.dataDeviceManager)
 	C.wl_data_source_add_listener(s.source, &C.gio_data_source_listener, unsafe.Pointer(s.seat))
 	offers := clipboardMimeTypes
 	if mime == "image/png" {
 		offers = []string{mime}
+	} else if html != nil {
+		offers = append(slices.Clip(offers), "text/html")
 	}
 	for _, mime := range offers {
 		cmime := C.CString(mime)
@@ -1167,6 +1178,10 @@ func (w *window) WriteClipboard(mime string, s []byte) {
 	w.disp.writeClipboard(mime, s)
 }
 
+func (w *window) WriteClipboardHTML(text, html []byte) {
+	w.disp.writeClipboardHTML("application/text", text, html)
+}
+
 func (w *window) Configure(options []Option) {
 	_, cfg := w.getConfig()
 	prev := w.config
@@ -1806,6 +1821,9 @@ func gio_onDataSourceTarget(data unsafe.Pointer, source *C.struct_wl_data_source
 func gio_onDataSourceSend(data unsafe.Pointer, source *C.struct_wl_data_source, mime *C.char, fd C.int32_t) {
 	s := callbackLoad(data).(*wlSeat)
 	content := s.content
+	if C.GoString(mime) == "text/html" {
+		content = s.html
+	}
 	go func() {
 		defer syscall.Close(int(fd))
 		// A pipe takes a picture in parts.
@@ -1827,6 +1845,7 @@ func gio_onDataSourceCancelled(data unsafe.Pointer, source *C.struct_wl_data_sou
 	s := callbackLoad(data).(*wlSeat)
 	if s.source == source {
 		s.content = nil
+		s.html = nil
 		s.source = nil
 	}
 	C.wl_data_source_destroy(source)
