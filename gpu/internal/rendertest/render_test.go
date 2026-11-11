@@ -204,7 +204,9 @@ func TestBuildOffscreen(t *testing.T) {
 
 // TestPathKeptOverFrames draws a path of ops kept over frames, which goes
 // from the shared buffer of its first frame to a buffer of its own in the
-// next, after a path recorded anew in every frame.
+// next, after a path recorded anew in every frame. Its first frame is the
+// one the shared buffer shrinks in, after a first frame that needed a
+// large one.
 func TestPathKeptOverFrames(t *testing.T) {
 	sz := image.Point{X: 128, Y: 128}
 	w := newWindow(t, sz.X, sz.Y)
@@ -215,18 +217,23 @@ func TestPathKeptOverFrames(t *testing.T) {
 	paint.FillShape(kept, red, rr.Op(kept))
 	call := m.Stop()
 	ops := new(op.Ops)
-	for i := range 4 {
+	// The shared buffer may shrink in every 60th frame (sharedVertsFrames),
+	// to the most the 60 frames before needed: the 120th is the first
+	// after the large first frame.
+	const shrinks = 119
+	for i := range shrinks + 4 {
 		ops.Reset()
-		x := 8 + i*8
+		x := 8 + i%8*8
 		paint.FillShape(ops, black, clip.Ellipse(image.Rect(x, 8, x+40, 48)).Op(ops))
 		if i == 0 {
-			// Enough paths for the shared buffer to shrink in the next frame.
 			for j := range 1000 {
 				x, y := j%50, 64+j/50
 				paint.FillShape(ops, black, clip.Ellipse(image.Rect(x, y, x+8, y+8)).Op(ops))
 			}
 		}
-		call.Add(ops)
+		if i >= shrinks {
+			call.Add(ops)
+		}
 		if err := w.Frame(ops); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
@@ -237,9 +244,13 @@ func TestPathKeptOverFrames(t *testing.T) {
 		r := result{t: t, img: img}
 		r.expect(x+20, 28, colornames.Black)
 		r.expect(x+2, 10, transparent)
+		r.expect(66, 66, transparent)
+		if i < shrinks {
+			r.expect(92, 92, transparent)
+			continue
+		}
 		r.expect(92, 92, colornames.Red)
 		r.expect(66, 92, colornames.Red)
-		r.expect(66, 66, transparent)
 	}
 }
 

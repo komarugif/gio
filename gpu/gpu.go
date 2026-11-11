@@ -78,22 +78,25 @@ type drawOps struct {
 	transStack   []f32.Affine2D
 	layers       []opacityLayer
 	opacityStack []int
-	vertCache    []byte
-	viewport     image.Point
-	clear        bool
-	clearColor   f32color.RGBA
-	imageOps     []imageOp
-	pathOps      []*pathOp
-	pathOpCache  []pathOp
-	qs           quadSplitter
-	pathCache    *opCache
-	// sharedVerts holds the vertices of the frame's paths new in it, in
-	// sharedBuf; prevSharedVerts those of the frame before.
-	sharedVerts     []byte
-	prevSharedVerts []byte
-	sharedBuf       driver.Buffer
-	sharedBufSize   int
-	frameNum        uint64
+	// vertCache holds the vertices of the paths built in the frame, and
+	// is the frame's shared buffer of paths; prevVertCache is the one of
+	// the frame before.
+	vertCache     []byte
+	prevVertCache []byte
+	viewport      image.Point
+	clear         bool
+	clearColor    f32color.RGBA
+	imageOps      []imageOp
+	pathOps       []*pathOp
+	pathOpCache   []pathOp
+	qs            quadSplitter
+	pathCache     *opCache
+	sharedBuf     driver.Buffer
+	sharedBufSize int
+	// sharedPeak is the largest need of the shared buffer in the frames
+	// since it was last allowed to shrink.
+	sharedPeak int
+	frameNum   uint64
 }
 
 type opacityLayer struct {
@@ -149,9 +152,11 @@ type pathOp struct {
 	intersect f32.Rectangle
 	pathKey   opKey
 	path      bool
-	pathVerts []byte
-	parent    *pathOp
-	place     placement
+	// verts and nverts tell where the vertices of the path built in the
+	// frame are in vertCache.
+	verts, nverts int
+	parent        *pathOp
+	place         placement
 }
 
 type imageOp struct {
@@ -1067,7 +1072,7 @@ func (d *drawOps) reset(viewport image.Point) {
 	d.imageOps = d.imageOps[:0]
 	d.pathOps = d.pathOps[:0]
 	d.pathOpCache = d.pathOpCache[:0]
-	d.vertCache = d.vertCache[:0]
+	d.prevVertCache, d.vertCache = d.vertCache, d.prevVertCache[:0]
 	d.transStack = d.transStack[:0]
 	d.layers = d.layers[:0]
 	d.opacityStack = d.opacityStack[:0]
@@ -1085,52 +1090,63 @@ func (d *drawOps) collect(root *op.Ops, viewport image.Point) {
 	d.collectOps(&d.reader, viewf)
 }
 
-// buildPaths puts the vertices of the paths new in the frame in the frame's
-// shared buffer: most paths are recorded anew in every frame, and a buffer
-// of their own, made and deleted in each, cost thousands of GPU calls a
-// second. A path met again in the next frame is in ops kept over frames,
-// and gets a buffer of its own from the vertices it had there.
+// buildPaths draws the paths new in the frame from the frame's shared
+// buffer, which is vertCache as it is: most paths are recorded anew in
+// every frame, and a buffer of their own, made and deleted in each, cost
+// thousands of GPU calls a second. A path met again in the next frame is
+// in ops kept over frames, and gets a buffer of its own from the vertices
+// it had there.
 func (d *drawOps) buildPaths(ctx driver.Device) {
 	d.frameNum++
-	d.prevSharedVerts, d.sharedVerts = d.sharedVerts, d.prevSharedVerts[:0]
 	for _, p := range d.pathOps {
 		v, exists := d.pathCache.get(p.pathKey)
 		switch {
 		case !exists || v.data.data == nil && v.data.frame == 0:
-			off := len(d.sharedVerts)
-			d.sharedVerts = append(d.sharedVerts, p.pathVerts...)
 			d.pathCache.put(p.pathKey, opCacheValue{
 				data: pathData{
-					ncurves: len(p.pathVerts) / vertStride,
+					ncurves: p.nverts / vertStride,
 					frame:   d.frameNum,
-					offset:  off,
+					offset:  p.verts,
 				},
 				bounds: p.bounds,
 			})
 		case v.data.frame != 0 && v.data.frame != d.frameNum:
 			// An entry of the shared buffer lives one frame unless met
 			// again, so it is of the frame before.
-			verts := d.prevSharedVerts[v.data.offset : v.data.offset+v.data.ncurves*vertStride]
+			verts := d.prevVertCache[v.data.offset : v.data.offset+v.data.ncurves*vertStride]
 			v.data = buildPath(ctx, verts)
 			d.pathCache.put(p.pathKey, v)
 		}
-		p.pathVerts = nil
 	}
 	d.uploadSharedVerts(ctx)
 }
 
-// minSharedVerts is the smallest size of the shared buffer of paths.
-const minSharedVerts = 64 << 10
+const (
+	// minSharedVerts is the smallest size of the shared buffer of paths.
+	minSharedVerts = 64 << 10
+	// sharedVertsFrames is how many frames the shared buffer stays as
+	// large as their largest need before it shrinks: frames that need a
+	// little less now and then would make it and its slices anew in each.
+	sharedVertsFrames = 60
+)
 
 func (d *drawOps) uploadSharedVerts(ctx driver.Device) {
-	n := len(d.sharedVerts)
-	if n > d.sharedBufSize || n < d.sharedBufSize/4 && d.sharedBufSize > minSharedVerts {
+	n := len(d.vertCache)
+	need := n
+	shrink := false
+	d.sharedPeak = max(d.sharedPeak, n)
+	if d.frameNum%sharedVertsFrames == 0 {
+		need = d.sharedPeak
+		shrink = need < d.sharedBufSize/4 && d.sharedBufSize > minSharedVerts
+		d.sharedPeak = 0
+	}
+	if n > d.sharedBufSize || shrink {
 		if d.sharedBuf != nil {
 			d.sharedBuf.Release()
 		}
 		size := minSharedVerts
-		if n > size {
-			size = 1 << bits.Len(uint(n-1))
+		if need > size {
+			size = 1 << bits.Len(uint(need-1))
 		}
 		buf, err := ctx.NewBuffer(driver.BufferBindingVertices, size)
 		if err != nil {
@@ -1138,18 +1154,14 @@ func (d *drawOps) uploadSharedVerts(ctx driver.Device) {
 		}
 		if size < d.sharedBufSize {
 			// The vertices shrink with the buffer.
-			d.sharedVerts = append(make([]byte, 0, size), d.sharedVerts...)
-			d.prevSharedVerts = nil
+			d.vertCache = append(make([]byte, 0, size), d.vertCache...)
+			d.prevVertCache = nil
 		}
 		d.sharedBuf, d.sharedBufSize = buf, size
 	}
-	if n == 0 {
-		return
+	if n > 0 {
+		d.sharedBuf.Upload(d.vertCache)
 	}
-	// Upload the whole buffer, for the driver to give it new storage
-	// instead of waiting for the frame before to draw from it.
-	d.sharedVerts = slices.Grow(d.sharedVerts, d.sharedBufSize-n)[:d.sharedBufSize]
-	d.sharedBuf.Upload(d.sharedVerts)
 }
 
 func (d *drawOps) newPathOp() *pathOp {
@@ -1157,7 +1169,9 @@ func (d *drawOps) newPathOp() *pathOp {
 	return &d.pathOpCache[len(d.pathOpCache)-1]
 }
 
-func (d *drawOps) addClipPath(state *drawState, aux []byte, auxKey opKey, bounds f32.Rectangle, off f32.Point) {
+// addClipPath adds a clip, a path when aux is not empty; verts is where the
+// path's vertices start in vertCache, when they were built in the frame.
+func (d *drawOps) addClipPath(state *drawState, aux []byte, verts int, auxKey opKey, bounds f32.Rectangle, off f32.Point) {
 	npath := d.newPathOp()
 	*npath = pathOp{
 		parent:    state.cpath,
@@ -1174,7 +1188,7 @@ func (d *drawOps) addClipPath(state *drawState, aux []byte, auxKey opKey, bounds
 		npath.rect = false
 		npath.pathKey = auxKey
 		npath.path = true
-		npath.pathVerts = aux
+		npath.verts, npath.nverts = verts, len(aux)
 		d.pathOps = append(d.pathOps, npath)
 	}
 	state.cpath = npath
@@ -1301,6 +1315,7 @@ loop:
 			quads.key.Key = encOp.Key
 
 		case ops.TypeClip:
+			verts := -1
 			var op ops.ClipOp
 			op.Decode(encOp.Data)
 			quads.key.outline = op.Outline
@@ -1317,6 +1332,7 @@ loop:
 					bounds = v.bounds
 				} else {
 					var pathData []byte
+					verts = len(d.vertCache)
 					pathData, bounds = d.buildVerts(
 						quads.aux, trans, quads.key.outline, quads.key.strokeWidth,
 					)
@@ -1326,11 +1342,12 @@ loop:
 					d.pathCache.put(quads.key, opCacheValue{bounds: bounds})
 				}
 			} else {
+				verts = len(d.vertCache)
 				quads.aux, bounds, _ = d.boundsForTransformedRect(bounds, trans)
 				quads.key = opKey{Key: encOp.Key}
 				quads.key = quads.key.SetTransform(trans)
 			}
-			d.addClipPath(&state, quads.aux, quads.key, bounds, off)
+			d.addClipPath(&state, quads.aux, verts, quads.key, bounds, off)
 			quads = quadsOp{}
 		case ops.TypePopClip:
 			state.cpath = state.cpath.parent
@@ -1361,6 +1378,7 @@ loop:
 				sz := state.image.src.Rect.Size()
 				dst = f32.Rectangle{Max: layout.FPt(sz)}
 			}
+			verts := len(d.vertCache)
 			clipData, bnd, partialTrans := d.boundsForTransformedRect(dst, t)
 			cl := viewport.Intersect(bnd.Add(off))
 			if state.cpath != nil {
@@ -1375,7 +1393,7 @@ loop:
 				// this transformed rectangle.
 				k := opKey{Key: encOp.Key}
 				k = k.SetTransform(t)
-				d.addClipPath(&state, clipData, k, bnd, off)
+				d.addClipPath(&state, clipData, verts, k, bnd, off)
 			}
 
 			bounds := cl.Round()

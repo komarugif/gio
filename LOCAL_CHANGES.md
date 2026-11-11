@@ -648,22 +648,37 @@ Run the focused check from the project root:
   letter on a line with an emoji told the emoji's height in `Ascent`.
   Upstream has the line's alone.
 - `gpu/gpu.go` (`drawOps.buildPaths`, `uploadSharedVerts`), `gpu/path.go`
-  (`pathData`): the vertices of the paths new in a frame go into one vertex
-  buffer of the frame, uploaded whole at once, and each path is drawn from
-  its offset in it. Upstream made a buffer of every such path
-  (`NewImmutableBuffer`) and deleted it at the end of the next frame
-  without it; a path recorded anew in each frame, as most of a UI is, cost
-  one each frame: about 10,000 in the first 15 s of the messenger's demo
-  with a GIF playing (about 50 with the shared buffer), measured on
-  llvmpipe. A path
-  met again in the next frame is in ops kept over frames: it gets a buffer
-  of its own then, from its vertices of the frame before, kept for this, and
-  stays in the cache as upstream's did. The shared buffer grows by powers
-  of two and shrinks, with the slices behind it, to the one that fits once
-  a frame needs less than a quarter of it (64 KiB at least). Every backend
-  uploads it with `Buffer.Upload`: OpenGL replaces its storage (the upload
-  is the whole buffer, for the driver not to wait for the frame before),
-  Direct3D 11 by `UpdateSubresource`, Vulkan and Metal through a staging
-  buffer. Checked on Linux with OpenGL (llvmpipe) only.
-  `TestPathKeptOverFrames` draws a path of kept ops beside new ones over
-  four frames, with a frame large enough for the buffer to shrink after it.
+  (`pathData`): the paths new in a frame are drawn from one vertex buffer of
+  the frame, each from its offset in it. Upstream made a buffer of every
+  such path (`NewImmutableBuffer`) and deleted it at the end of the next
+  frame without it; a path recorded anew in each frame, as most of a UI is,
+  cost one each frame: about 10,000 in the first 15 s of the messenger's
+  demo with a GIF playing, about 50 with the shared buffer.
+  - The shared buffer is `vertCache` as collecting the frame left it: the
+    vertices are built there anyway, and a path keeps where its own start
+    (`pathOp.verts`), so nothing is copied. It is uploaded once a frame,
+    as much of it as the frame filled (`Buffer.Upload`: OpenGL
+    `glBufferSubData`, Direct3D 11 `UpdateSubresource`, Vulkan and Metal
+    through a staging buffer). Uploading the whole buffer, for OpenGL to
+    give it new storage, cost more than it saved: after a large frame the
+    buffer stays large for a while.
+  - A path met again in the next frame is in ops kept over frames: it gets
+    a buffer of its own then, from its vertices in the `vertCache` of the
+    frame before, which is kept for this, and stays in the cache as
+    upstream's did.
+  - The buffer grows by powers of two. It shrinks, with both `vertCache`s,
+    only in every 60th frame, to the most the 60 frames before needed, once
+    that is less than a quarter of it (64 KiB at least): frames whose need
+    went up and down across a quarter made the buffer and the slices anew
+    every few frames.
+  - Measured with the first version, which copied the vertices into a
+    slice of their own and uploaded the whole buffer, on Linux with a
+    hardware GPU (a laptop with an i5-12500H, NVIDIA's driver 610.43 and
+    Mesa both loaded): `Benchmark1000Circles` 4.01 → 2.90 ms,
+    `BenchmarkDrawUI` 1.27 → 1.05 ms, `BenchmarkDrawUITransformed` 3.71 →
+    3.99 ms (the copy of its 4 MB of vertices a frame); in the messenger's
+    demo a frame took 3.00 → 2.73 ms, the renderer's part of the CPU 1.37
+    → 0.87 s over 15 s. This version, on llvmpipe only:
+    `BenchmarkDrawUITransformed` 9.57 → 8.84 ms, where the first had 9.77.
+  - `TestPathKeptOverFrames` draws a path of kept ops beside new ones,
+    first in the frame the buffer shrinks in after a large first frame.
