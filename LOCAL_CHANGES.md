@@ -671,14 +671,14 @@ Run the focused check from the project root:
     that is less than a quarter of it (64 KiB at least): frames whose need
     went up and down across a quarter made the buffer and the slices anew
     every few frames.
-  - Measured with the first version, which copied the vertices into a
-    slice of their own and uploaded the whole buffer, on Linux with a
-    hardware GPU (a laptop with an i5-12500H, NVIDIA's driver 610.43 and
-    Mesa both loaded): `Benchmark1000Circles` 4.01 → 2.90 ms,
-    `BenchmarkDrawUI` 1.27 → 1.05 ms, `BenchmarkDrawUITransformed` 3.71 →
-    3.99 ms (the copy of its 4 MB of vertices a frame); in the messenger's
-    demo a frame took 3.00 → 2.73 ms, the renderer's part of the CPU 1.37
-    → 0.87 s over 15 s. This version, on llvmpipe only:
-    `BenchmarkDrawUITransformed` 9.57 → 8.84 ms, where the first had 9.77.
+  - Measured on Linux with a hardware GPU (a laptop with an i5-12500H,
+    NVIDIA's driver 610.43 and Mesa both loaded): `Benchmark1000Circles`
+    4.02 → 2.65 ms, `BenchmarkDrawUI` 1.27 → 1.09 ms,
+    `BenchmarkDrawUITransformed` 3.71 → 3.46 ms; the benchmarks without
+    new paths as before. The first version, which copied the vertices into
+    a slice of their own and uploaded the whole buffer, had
+    `BenchmarkDrawUITransformed` at 3.99 ms, for the copy of its 4 MB of
+    vertices a frame. In the messenger's demo a frame took 3.00 → 2.62 ms
+    on average, `buildPaths` 0.48 → 0.07 s of CPU over 15 s.
   - `TestPathKeptOverFrames` draws a path of kept ops beside new ones,
     first in the frame the buffer shrinks in after a large first frame.
