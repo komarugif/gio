@@ -382,6 +382,15 @@ func Software(g GPU) bool {
 	return ok && gg.ctx.Caps().Software
 }
 
+// Device names the device g draws with and its driver, as its API tells
+// them; empty if it tells nothing.
+func Device(g GPU) string {
+	if gg, ok := g.(*gpu); ok {
+		return gg.ctx.Caps().Device
+	}
+	return ""
+}
+
 func newGPU(ctx driver.Device) *gpu {
 	g := &gpu{
 		cache: newTextureCache(),

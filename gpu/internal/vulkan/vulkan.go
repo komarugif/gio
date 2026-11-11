@@ -17,6 +17,7 @@ import (
 
 type Backend struct {
 	physDev vk.PhysicalDevice
+	device  string // what Caps tells of physDev
 	dev     vk.Device
 	queue   vk.Queue
 	cmdPool struct {
@@ -144,6 +145,7 @@ func newVulkanDevice(api driver.Vulkan) (driver.Device, error) {
 		caps:      driver.FeatureCompute,
 		passes:    make(map[passKey]vk.RenderPass),
 	}
+	b.device = vk.PhysicalDeviceName(b.physDev)
 	b.queue = vk.GetDeviceQueue(b.dev, api.QueueFamily, api.QueueIndex)
 	cmdPool, err := vk.CreateCommandPool(b.dev, api.QueueFamily)
 	if err != nil {
@@ -250,6 +252,7 @@ func (b *Backend) Caps() driver.Caps {
 	return driver.Caps{
 		MaxTextureSize: 4096,
 		Features:       b.caps,
+		Device:         b.device,
 	}
 }
 

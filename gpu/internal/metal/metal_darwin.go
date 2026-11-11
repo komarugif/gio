@@ -47,6 +47,14 @@ static CFTypeAndError ok(id obj) {
 	return res;
 }
 
+static char *deviceName(CFTypeRef devRef) {
+	@autoreleasepool {
+		id<MTLDevice> dev = (__bridge id<MTLDevice>)devRef;
+		const char *name = dev.name.UTF8String;
+		return strdup(name != NULL ? name : "");
+	}
+}
+
 static CFTypeRef queueNewBuffer(CFTypeRef queueRef) {
 	@autoreleasepool {
 		id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)queueRef;
@@ -422,6 +430,7 @@ import "C"
 
 type Backend struct {
 	dev      C.CFTypeRef
+	device   string // what Caps tells of dev
 	queue    C.CFTypeRef
 	pixelFmt C.MTLPixelFormat
 
@@ -500,8 +509,11 @@ func newMetalDevice(api driver.Metal) (driver.Device, error) {
 	C.CFRetain(dev)
 	queue := C.CFTypeRef(api.Queue)
 	C.CFRetain(queue)
+	name := C.deviceName(dev)
+	defer C.free(unsafe.Pointer(name))
 	b := &Backend{
 		dev:      dev,
+		device:   "Metal: " + C.GoString(name),
 		queue:    queue,
 		pixelFmt: C.MTLPixelFormat(api.PixelFormat),
 		bufSizes: make([]uint32, bufferUnits),
@@ -590,6 +602,7 @@ func (b *Backend) Caps() driver.Caps {
 	return driver.Caps{
 		MaxTextureSize: 8192,
 		Features:       driver.FeatureSRGB | driver.FeatureCompute | driver.FeatureFloatRenderTargets,
+		Device:         b.device,
 	}
 }
 

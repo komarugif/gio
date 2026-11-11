@@ -216,7 +216,9 @@ func newOpenGLDevice(api driver.OpenGL) (driver.Device, error) {
 		b.feats.Features |= driver.FeatureTimers
 	}
 	b.feats.MaxTextureSize = f.GetInteger(gl.MAX_TEXTURE_SIZE)
-	b.feats.Software = softwareRenderer(f.GetString(gl.RENDERER))
+	renderer := f.GetString(gl.RENDERER)
+	b.feats.Software = softwareRenderer(renderer)
+	b.feats.Device = renderer + ", " + f.GetString(gl.VERSION)
 	if !b.sharedCtx {
 		// We have exclusive access to the context, so query the GL state once
 		// instead of at each frame.

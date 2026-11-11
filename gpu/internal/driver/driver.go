@@ -115,6 +115,9 @@ type Caps struct {
 	// Software is true if the device draws on the CPU: llvmpipe and the
 	// other software rasterizers of OpenGL, WARP of Direct3D.
 	Software bool
+	// Device names the device and its driver as the API tells them, such
+	// as GL_RENDERER and GL_VERSION; empty if the API tells nothing.
+	Device string
 }
 
 type VertexShader interface {

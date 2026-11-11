@@ -682,3 +682,15 @@ Run the focused check from the project root:
     on average, `buildPaths` 0.48 → 0.07 s of CPU over 15 s.
   - `TestPathKeptOverFrames` draws a path of kept ops beside new ones,
     first in the frame the buffer shrinks in after a large first frame.
+- `gpu.Device`, `app.GPUDevice` (`gpu/internal/driver.Caps.Device`): the device
+  and the driver windows are drawn with, as the API names them: OpenGL's
+  `GL_RENDERER` and `GL_VERSION`, Direct3D 11's adapter with its vendor's
+  and device's ids and its driver's version (`CheckInterfaceSupport` for
+  `IDXGIDevice`, as Chromium asks it), Vulkan's physical device with its
+  versions of Vulkan and of the driver (NVIDIA's in its own packing),
+  Metal's device name. `app.GPUDevice` is the GPU made last for a window, as
+  `app.SoftwareRendered` is. The messenger's profiler records it: on a
+  machine with two GPUs nothing else told which of them drew, since the
+  libraries of both are loaded and Go's CPU profile shows no C frames.
+  `gpu/headless` `TestDevice`. Built and run on Linux with OpenGL only;
+  Direct3D 11 vetted for Windows, Vulkan and Metal not compiled.

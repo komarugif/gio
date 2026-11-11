@@ -197,6 +197,8 @@ func (w *Window) validateAndProcess(size image.Point, sync bool, frame *op.Ops, 
 				return err
 			}
 			w.gpu = gpu
+			device := gpuDeviceName(gpu)
+			gpuDevice.Store(&device)
 			if sw := gpuSoftware(gpu); softwareRendered.Swap(sw) != sw {
 				// What was laid out for this frame was decided without it.
 				w.Invalidate()

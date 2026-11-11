@@ -1626,22 +1626,59 @@ func (a *IDXGIAdapter) GetDesc() (DXGI_ADAPTER_DESC, error) {
 // Basic Render Driver, which is WARP, both for a device made as WARP's and
 // for a hardware one on a system without a GPU's driver.
 func IsSoftware(dev *Device) bool {
-	dxgiDev, err := IUnknownQueryInterface(unsafe.Pointer(dev), dev.Vtbl.QueryInterface, &IID_IDXGIDevice)
-	if err != nil {
-		return false
-	}
-	adapter, err := (*IDXGIDevice)(unsafe.Pointer(dxgiDev)).GetAdapter()
-	IUnknownRelease(unsafe.Pointer(dxgiDev), dxgiDev.Vtbl.Release)
-	if err != nil {
-		return false
-	}
-	desc, err := adapter.GetDesc()
-	IUnknownRelease(unsafe.Pointer(adapter), adapter.Vtbl.Release)
+	desc, _, err := adapterDesc(dev)
 	if err != nil {
 		return false
 	}
 	// https://learn.microsoft.com/windows/win32/direct3darticles/directx-warp
 	return desc.VendorId == 0x1414 && desc.DeviceId == 0x8c
+}
+
+// DeviceName names the adapter of dev, its vendor's and device's ids and
+// the version of its driver, if the adapter tells it.
+func DeviceName(dev *Device) string {
+	desc, driver, err := adapterDesc(dev)
+	if err != nil {
+		return ""
+	}
+	name := fmt.Sprintf("%s (%04x:%04x)", windows.UTF16ToString(desc.Description[:]), desc.VendorId, desc.DeviceId)
+	if driver != 0 {
+		name += fmt.Sprintf(", driver %d.%d.%d.%d", driver>>48, driver>>32&0xffff, driver>>16&0xffff, driver&0xffff)
+	}
+	return name
+}
+
+// adapterDesc describes the adapter of dev, with the version of its user
+// mode driver, zero if the adapter does not tell it.
+func adapterDesc(dev *Device) (DXGI_ADAPTER_DESC, uint64, error) {
+	dxgiDev, err := IUnknownQueryInterface(unsafe.Pointer(dev), dev.Vtbl.QueryInterface, &IID_IDXGIDevice)
+	if err != nil {
+		return DXGI_ADAPTER_DESC{}, 0, err
+	}
+	adapter, err := (*IDXGIDevice)(unsafe.Pointer(dxgiDev)).GetAdapter()
+	IUnknownRelease(unsafe.Pointer(dxgiDev), dxgiDev.Vtbl.Release)
+	if err != nil {
+		return DXGI_ADAPTER_DESC{}, 0, err
+	}
+	defer IUnknownRelease(unsafe.Pointer(adapter), adapter.Vtbl.Release)
+	desc, err := adapter.GetDesc()
+	if err != nil {
+		return DXGI_ADAPTER_DESC{}, 0, err
+	}
+	// CheckInterfaceSupport tells the driver's version for IDXGIDevice,
+	// as Chromium asks it.
+	var driver uint64
+	r, _, _ := syscall.Syscall(
+		adapter.Vtbl.CheckInterfaceSupport,
+		3,
+		uintptr(unsafe.Pointer(adapter)),
+		uintptr(unsafe.Pointer(&IID_IDXGIDevice)),
+		uintptr(unsafe.Pointer(&driver)),
+	)
+	if r != 0 {
+		driver = 0
+	}
+	return desc, driver, nil
 }
 
 func IUnknownQueryInterface(obj unsafe.Pointer, queryInterfaceMethod uintptr, guid *GUID) (*IUnknown, error) {

@@ -1375,6 +1375,22 @@ func CmdDrawIndexed(cmdBuf CommandBuffer, idxCount, instCount, firstIdx, vertOff
 	C.vkCmdDrawIndexed(funcs.vkCmdDrawIndexed, cmdBuf, C.uint32_t(idxCount), C.uint32_t(instCount), C.uint32_t(firstIdx), C.int32_t(vertOff), C.uint32_t(firstInst))
 }
 
+// PhysicalDeviceName names physDev, its vendor's and device's ids, the
+// version of Vulkan it has and the version of its driver.
+func PhysicalDeviceName(physDev PhysicalDevice) string {
+	var props C.VkPhysicalDeviceProperties
+	C.vkGetPhysicalDeviceProperties(funcs.vkGetPhysicalDeviceProperties, physDev, &props)
+	name := C.GoString(&props.deviceName[0])
+	api, drv := uint32(props.apiVersion), uint32(props.driverVersion)
+	driver := fmt.Sprintf("%d.%d.%d", drv>>22, drv>>12&0x3ff, drv&0xfff)
+	if props.vendorID == 0x10de {
+		// NVIDIA packs its own version: 10, 8, 8 and 6 bits.
+		driver = fmt.Sprintf("%d.%d.%d", drv>>22, drv>>14&0xff, drv>>6&0xff)
+	}
+	return fmt.Sprintf("%s (%04x:%04x), Vulkan %d.%d.%d, driver %s",
+		name, uint32(props.vendorID), uint32(props.deviceID), api>>22&0x7f, api>>12&0x3ff, api&0xfff, driver)
+}
+
 func GetPhysicalDeviceFormatProperties(physDev PhysicalDevice, format Format) FormatFeatureFlags {
 	var props C.VkFormatProperties
 	C.vkGetPhysicalDeviceFormatProperties(funcs.vkGetPhysicalDeviceFormatProperties, physDev, format, &props)

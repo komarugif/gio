@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"testing"
 
+	"gioui.org/gpu"
 	"gioui.org/internal/f32color"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -146,4 +147,19 @@ func newTestWindow(t *testing.T) (*Window, func()) {
 	return w, func() {
 		w.Release()
 	}
+}
+
+// TestDevice checks that a GPU names its device and driver, as the
+// messenger's profiler records them.
+func TestDevice(t *testing.T) {
+	w, release := newTestWindow(t)
+	defer release()
+	if err := w.Frame(new(op.Ops)); err != nil {
+		t.Fatal(err)
+	}
+	d := gpu.Device(w.gpu)
+	if d == "" {
+		t.Fatal("no device")
+	}
+	t.Log(d)
 }
