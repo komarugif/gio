@@ -647,3 +647,23 @@ Run the focused check from the project root:
   would be at another (`internal/messenger/ui/row_profile.go`), and a Latin
   letter on a line with an emoji told the emoji's height in `Ascent`.
   Upstream has the line's alone.
+- `gpu/gpu.go` (`drawOps.buildPaths`, `uploadSharedVerts`), `gpu/path.go`
+  (`pathData`): the vertices of the paths new in a frame go into one vertex
+  buffer of the frame, uploaded whole at once, and each path is drawn from
+  its offset in it. Upstream made a buffer of every such path
+  (`NewImmutableBuffer`) and deleted it at the end of the next frame
+  without it; a path recorded anew in each frame, as most of a UI is, cost
+  one each frame: about 10,000 in the first 15 s of the messenger's demo
+  with a GIF playing (about 50 with the shared buffer), measured on
+  llvmpipe. A path
+  met again in the next frame is in ops kept over frames: it gets a buffer
+  of its own then, from its vertices of the frame before, kept for this, and
+  stays in the cache as upstream's did. The shared buffer grows by powers
+  of two and shrinks, with the slices behind it, to the one that fits once
+  a frame needs less than a quarter of it (64 KiB at least). Every backend
+  uploads it with `Buffer.Upload`: OpenGL replaces its storage (the upload
+  is the whole buffer, for the driver not to wait for the frame before),
+  Direct3D 11 by `UpdateSubresource`, Vulkan and Metal through a staging
+  buffer. Checked on Linux with OpenGL (llvmpipe) only.
+  `TestPathKeptOverFrames` draws a path of kept ops beside new ones over
+  four frames, with a frame large enough for the buffer to shrink after it.

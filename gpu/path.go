@@ -103,7 +103,13 @@ type FBO struct {
 
 type pathData struct {
 	ncurves int
-	data    driver.Buffer
+	// data is the path's own buffer, nil for a path in the shared buffer
+	// of its frame.
+	data driver.Buffer
+	// frame is the frame whose shared buffer holds the path, from offset;
+	// zero for a path with a buffer of its own.
+	frame  uint64
+	offset int
 }
 
 // vertex data suitable for passing to vertex programs.
@@ -376,7 +382,7 @@ func (s *stenciler) stencilPath(bounds image.Rectangle, offset f32.Point, uv ima
 		if max := pathBatchSize; batch > max {
 			batch = max
 		}
-		off := vertStride * start * 4
+		off := data.offset + vertStride*start*4
 		s.ctx.BindVertexBuffer(data.data, off)
 		s.ctx.DrawElements(0, batch*6)
 		start += batch

@@ -14,6 +14,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"math/bits"
 	"slices"
 	"time"
 	"unsafe"
@@ -86,6 +87,13 @@ type drawOps struct {
 	pathOpCache  []pathOp
 	qs           quadSplitter
 	pathCache    *opCache
+	// sharedVerts holds the vertices of the frame's paths new in it, in
+	// sharedBuf; prevSharedVerts those of the frame before.
+	sharedVerts     []byte
+	prevSharedVerts []byte
+	sharedBuf       driver.Buffer
+	sharedBufSize   int
+	frameNum        uint64
 }
 
 type opacityLayer struct {
@@ -387,6 +395,9 @@ func (g *gpu) Clear(col color.NRGBA) {
 func (g *gpu) Release() {
 	g.renderer.release()
 	g.drawOps.pathCache.release()
+	if g.drawOps.sharedBuf != nil {
+		g.drawOps.sharedBuf.Release()
+	}
 	g.cache.release()
 	if g.timers != nil {
 		g.timers.Release()
@@ -448,7 +459,7 @@ func (g *gpu) frame(target RenderTarget) error {
 	}
 	g.stencilTimer.begin()
 	g.renderer.packStencils(&g.drawOps.pathOps)
-	g.renderer.stencilClips(g.drawOps.pathCache, g.drawOps.pathOps)
+	g.renderer.stencilClips(g.drawOps.pathCache, g.drawOps.sharedBuf, g.drawOps.pathOps)
 	g.renderer.packIntersections(g.drawOps.imageOps)
 	g.renderer.prepareIntersections(g.drawOps.imageOps)
 	g.renderer.intersect(g.drawOps.imageOps)
@@ -711,7 +722,7 @@ func createColorPrograms(b driver.Device, vsSrc shader.Sources, fsSrc [3]shader.
 	return pipelines, nil
 }
 
-func (r *renderer) stencilClips(pathCache *opCache, ops []*pathOp) {
+func (r *renderer) stencilClips(pathCache *opCache, shared driver.Buffer, ops []*pathOp) {
 	if len(r.packer.sizes) == 0 {
 		return
 	}
@@ -729,6 +740,9 @@ func (r *renderer) stencilClips(pathCache *opCache, ops []*pathOp) {
 			r.ctx.BindIndexBuffer(r.pather.stenciler.indexBuf)
 		}
 		v, _ := pathCache.get(p.pathKey)
+		if v.data.frame != 0 {
+			v.data.data = shared
+		}
 		r.pather.stencilPath(p.clip, p.off, p.place.Pos, v.data)
 	}
 	if fbo != -1 {
@@ -1071,17 +1085,71 @@ func (d *drawOps) collect(root *op.Ops, viewport image.Point) {
 	d.collectOps(&d.reader, viewf)
 }
 
+// buildPaths puts the vertices of the paths new in the frame in the frame's
+// shared buffer: most paths are recorded anew in every frame, and a buffer
+// of their own, made and deleted in each, cost thousands of GPU calls a
+// second. A path met again in the next frame is in ops kept over frames,
+// and gets a buffer of its own from the vertices it had there.
 func (d *drawOps) buildPaths(ctx driver.Device) {
+	d.frameNum++
+	d.prevSharedVerts, d.sharedVerts = d.sharedVerts, d.prevSharedVerts[:0]
 	for _, p := range d.pathOps {
-		if v, exists := d.pathCache.get(p.pathKey); !exists || v.data.data == nil {
-			data := buildPath(ctx, p.pathVerts)
+		v, exists := d.pathCache.get(p.pathKey)
+		switch {
+		case !exists || v.data.data == nil && v.data.frame == 0:
+			off := len(d.sharedVerts)
+			d.sharedVerts = append(d.sharedVerts, p.pathVerts...)
 			d.pathCache.put(p.pathKey, opCacheValue{
-				data:   data,
+				data: pathData{
+					ncurves: len(p.pathVerts) / vertStride,
+					frame:   d.frameNum,
+					offset:  off,
+				},
 				bounds: p.bounds,
 			})
+		case v.data.frame != 0 && v.data.frame != d.frameNum:
+			// An entry of the shared buffer lives one frame unless met
+			// again, so it is of the frame before.
+			verts := d.prevSharedVerts[v.data.offset : v.data.offset+v.data.ncurves*vertStride]
+			v.data = buildPath(ctx, verts)
+			d.pathCache.put(p.pathKey, v)
 		}
 		p.pathVerts = nil
 	}
+	d.uploadSharedVerts(ctx)
+}
+
+// minSharedVerts is the smallest size of the shared buffer of paths.
+const minSharedVerts = 64 << 10
+
+func (d *drawOps) uploadSharedVerts(ctx driver.Device) {
+	n := len(d.sharedVerts)
+	if n > d.sharedBufSize || n < d.sharedBufSize/4 && d.sharedBufSize > minSharedVerts {
+		if d.sharedBuf != nil {
+			d.sharedBuf.Release()
+		}
+		size := minSharedVerts
+		if n > size {
+			size = 1 << bits.Len(uint(n-1))
+		}
+		buf, err := ctx.NewBuffer(driver.BufferBindingVertices, size)
+		if err != nil {
+			panic(err)
+		}
+		if size < d.sharedBufSize {
+			// The vertices shrink with the buffer.
+			d.sharedVerts = append(make([]byte, 0, size), d.sharedVerts...)
+			d.prevSharedVerts = nil
+		}
+		d.sharedBuf, d.sharedBufSize = buf, size
+	}
+	if n == 0 {
+		return
+	}
+	// Upload the whole buffer, for the driver to give it new storage
+	// instead of waiting for the frame before to draw from it.
+	d.sharedVerts = slices.Grow(d.sharedVerts, d.sharedBufSize-n)[:d.sharedBufSize]
+	d.sharedBuf.Upload(d.sharedVerts)
 }
 
 func (d *drawOps) newPathOp() *pathOp {

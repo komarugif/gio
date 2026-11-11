@@ -202,6 +202,47 @@ func TestBuildOffscreen(t *testing.T) {
 			}))
 }
 
+// TestPathKeptOverFrames draws a path of ops kept over frames, which goes
+// from the shared buffer of its first frame to a buffer of its own in the
+// next, after a path recorded anew in every frame.
+func TestPathKeptOverFrames(t *testing.T) {
+	sz := image.Point{X: 128, Y: 128}
+	w := newWindow(t, sz.X, sz.Y)
+	defer w.Release()
+	kept := new(op.Ops)
+	m := op.Record(kept)
+	rr := clip.RRect{Rect: image.Rect(64, 64, 120, 120), SE: 16, SW: 16, NW: 16, NE: 16}
+	paint.FillShape(kept, red, rr.Op(kept))
+	call := m.Stop()
+	ops := new(op.Ops)
+	for i := range 4 {
+		ops.Reset()
+		x := 8 + i*8
+		paint.FillShape(ops, black, clip.Ellipse(image.Rect(x, 8, x+40, 48)).Op(ops))
+		if i == 0 {
+			// Enough paths for the shared buffer to shrink in the next frame.
+			for j := range 1000 {
+				x, y := j%50, 64+j/50
+				paint.FillShape(ops, black, clip.Ellipse(image.Rect(x, y, x+8, y+8)).Op(ops))
+			}
+		}
+		call.Add(ops)
+		if err := w.Frame(ops); err != nil {
+			t.Fatalf("frame %d: %v", i, err)
+		}
+		img := image.NewRGBA(image.Rectangle{Max: sz})
+		if err := w.Screenshot(img); err != nil {
+			t.Fatalf("frame %d: %v", i, err)
+		}
+		r := result{t: t, img: img}
+		r.expect(x+20, 28, colornames.Black)
+		r.expect(x+2, 10, transparent)
+		r.expect(92, 92, colornames.Red)
+		r.expect(66, 92, colornames.Red)
+		r.expect(66, 66, transparent)
+	}
+}
+
 func TestNegativeOverlaps(t *testing.T) {
 	t.Skip("test broken; see issue 479")
 
