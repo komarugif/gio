@@ -50,6 +50,9 @@ type Window struct {
 
 	ctx context
 	gpu gpu.GPU
+	// resetGPU asks the window to drop its GPU and context before its
+	// next frame (ResetGPUs).
+	resetGPU atomic.Bool
 	// timer tracks the delayed invalidate goroutine.
 	timer struct {
 		// quit is shuts down the goroutine.
@@ -159,6 +162,10 @@ func (w *Window) validateAndProcess(size image.Point, sync bool, frame *op.Ops, 
 		return nil
 	}
 	for {
+		if w.resetGPU.Swap(false) {
+			// The next GPU and context are made as SetGraphics set.
+			w.destroyGPU()
+		}
 		if w.gpu == nil && !w.nocontext {
 			var err error
 			if w.ctx == nil {
@@ -197,6 +204,7 @@ func (w *Window) validateAndProcess(size image.Point, sync bool, frame *op.Ops, 
 				return err
 			}
 			w.gpu = gpu
+			gpuWindows.add(w)
 			info := gpuDeviceInfo(gpu)
 			gpuInfo.Store(&info)
 			if sw := gpuSoftware(gpu); softwareRendered.Swap(sw) != sw {
@@ -542,6 +550,7 @@ func (c *callbacks) ActionAt(p f32.Point) (system.Action, bool) {
 }
 
 func (w *Window) destroyGPU() {
+	gpuWindows.remove(w)
 	if w.gpu != nil {
 		w.ctx.Lock()
 		w.gpu.Release()

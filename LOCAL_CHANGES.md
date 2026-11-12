@@ -722,11 +722,13 @@ Run the focused check from the project root:
   the kernel in `vulkaninfo`, none with `VK_LOADER_DRIVERS_SELECT=*intel*`).
   - `waylandContexts` tries the chosen API first and the other where it
     fails. `TestWaylandContexts`.
-  - The windows on Wayland share one instance of Vulkan, made by the first
-    drawn with Vulkan and kept for the process; each had an instance of
-    its own, which loaded every driver again. A window's device and
-    swapchain stay its own. The device is chosen once a process, as the
-    instance is made.
+  - The windows on Wayland share an instance of Vulkan made with the
+    device chosen (`acquireWaylandVulkan`); each had an instance of its
+    own, which loaded every driver again. A window's device and swapchain
+    stay its own. The instance is kept while the device chosen stays,
+    with no window on it too; windows that make their GPU after another
+    device is chosen share a new one, and the old is destroyed with its
+    last window, or at once if it has none. `TestWaylandVulkanInstances`.
   - With a device chosen, the instance is made with its driver alone
     (`vk.CreateInstanceFor`): the driver's library, from its manifest found
     where the loader looks (`vk.Drivers`), is handed to the loader with
@@ -758,3 +760,14 @@ Run the focused check from the project root:
     where no driver has a device. `TestCollectVulkanDevices`.
   Checked on Linux with lavapipe, which windows are not drawn with: the
   window on Vulkan with a chosen device on a laptop is not checked yet.
+- `app.ResetGPUs` (`app/window.go`, `app/graphics.go`): every window that
+  has a GPU drops it, with its context, and makes it anew in its next
+  frame, as `SetGraphics` set: the messenger applies another graphics API
+  or Vulkan device at once, without a restart and without making the
+  window anew. A window keeps a flag that its next frame reads before it
+  makes its context, on its own goroutine, and drops the GPU there as it
+  does when the device is lost; the windows that have a GPU are kept in a
+  set for it. A minimized window does it when it draws again. Checked on
+  Linux with a window drawn by OpenGL: reset to Vulkan, which cannot draw
+  a window there and falls back to EGL, and back, the frames going on.
+  Not checked with a window drawn by Vulkan.

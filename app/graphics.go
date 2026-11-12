@@ -2,7 +2,10 @@
 
 package app
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // GraphicsAPI is a graphics API windows can be drawn with where there is
 // a choice of them: on Wayland, OpenGL through EGL or Vulkan.
@@ -54,10 +57,53 @@ type Graphics struct {
 var graphics atomic.Pointer[Graphics]
 
 // SetGraphics sets how windows are drawn, for the GPU each window makes
-// from now on. The Vulkan device is chosen once a process, by the first
-// window drawn with Vulkan: windows share its instance of Vulkan.
+// from now on; ResetGPUs has the windows that have one make it anew. The
+// windows drawn with Vulkan share an instance of it, made with the device
+// chosen: windows that make their GPU after the device changed share a new
+// one, and the old is destroyed once the last window on it has let it go.
 func SetGraphics(g Graphics) {
 	graphics.Store(&g)
+}
+
+// gpuWindows is the windows that have a GPU.
+var gpuWindows windowSet
+
+type windowSet struct {
+	sync.Mutex
+	set map[*Window]struct{}
+}
+
+func (s *windowSet) add(w *Window) {
+	s.Lock()
+	defer s.Unlock()
+	if s.set == nil {
+		s.set = make(map[*Window]struct{})
+	}
+	s.set[w] = struct{}{}
+}
+
+func (s *windowSet) remove(w *Window) {
+	s.Lock()
+	defer s.Unlock()
+	delete(s.set, w)
+}
+
+// ResetGPUs has every window that has a GPU drop it, with its context, and
+// make it anew in its next frame, as SetGraphics set: another graphics API
+// or device, without making the window anew. A window drops its GPU on its
+// own goroutine, as it does when the device is lost; a minimized one when
+// it draws again. The content's textures and buffers are made anew.
+func ResetGPUs() {
+	gpuWindows.Lock()
+	windows := make([]*Window, 0, len(gpuWindows.set))
+	for w := range gpuWindows.set {
+		windows = append(windows, w)
+	}
+	gpuWindows.Unlock()
+	for _, w := range windows {
+		w.resetGPU.Store(true)
+		w.Invalidate()
+	}
 }
 
 // CurrentGraphics is what SetGraphics set last.

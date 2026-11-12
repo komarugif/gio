@@ -14,84 +14,127 @@ import (
 )
 
 type wlVkContext struct {
-	win  *window
-	inst vk.Instance
-	surf vk.Surface
-	ctx  *vkContext
+	win    *window
+	shared *sharedVulkan
+	inst   vk.Instance
+	surf   vk.Surface
+	ctx    *vkContext
 }
 
-// waylandVulkan is the instance of Vulkan the windows on Wayland share,
-// made by the first of them drawn with Vulkan and kept for the process:
-// making an instance loads the drivers, which wakes their GPUs up.
+// sharedVulkan is an instance of Vulkan that windows on Wayland share,
+// made with a device: making an instance loads drivers, which wakes their
+// GPUs up.
+type sharedVulkan struct {
+	inst   vk.Instance
+	device VulkanDevice
+	// windows is how many contexts hold the instance.
+	windows int
+}
+
+// waylandVulkan is the instance that windows made now take: made by the
+// first window drawn with Vulkan, kept while the device chosen stays, even
+// with no window on it. Another device chosen makes another, and the old
+// one goes with its last window.
 var waylandVulkan struct {
 	sync.Mutex
-	inst vk.Instance
-	// device is the device of Graphics.Vulkan when inst was made.
-	device VulkanDevice
+	current *sharedVulkan
+}
+
+// sameVulkanDevice reports whether a and b are the same device of the same
+// driver.
+func sameVulkanDevice(a, b VulkanDevice) bool {
+	return a.Driver == b.Driver && a.VendorID == b.VendorID && a.DeviceID == b.DeviceID
 }
 
 var waylandVulkanExtensions = []string{"VK_KHR_surface", "VK_KHR_wayland_surface"}
 
 func init() {
 	newWaylandVulkanContext = func(w *window) (context, error) {
-		inst, device, err := waylandVulkanInstance()
+		shared, err := acquireWaylandVulkan()
 		if err != nil {
 			return nil, err
 		}
+		inst := shared.inst
 		disp := w.display()
 		wlSurf, _, _ := w.surface()
 		surf, err := vk.CreateWaylandSurface(inst, unsafe.Pointer(disp), unsafe.Pointer(wlSurf))
 		if err != nil {
+			releaseWaylandVulkan(shared)
 			return nil, err
 		}
-		ctx, err := newPreferredVulkanContext(inst, surf, device.VendorID, device.DeviceID)
+		ctx, err := newPreferredVulkanContext(inst, surf, shared.device.VendorID, shared.device.DeviceID)
 		if err != nil {
 			vk.DestroySurface(inst, surf)
+			releaseWaylandVulkan(shared)
 			return nil, err
 		}
 		c := &wlVkContext{
-			win:  w,
-			inst: inst,
-			surf: surf,
-			ctx:  ctx,
+			win:    w,
+			shared: shared,
+			inst:   inst,
+			surf:   surf,
+			ctx:    ctx,
 		}
 		return c, nil
 	}
 	listVulkanDevices = waylandVulkanDevices
 }
 
-// waylandVulkanInstance returns the instance the windows share, making it
-// if it is not made: with the driver of Graphics.Vulkan alone, if there is
-// one and it loads, so that no other GPU wakes up; with every driver
-// otherwise.
-func waylandVulkanInstance() (vk.Instance, VulkanDevice, error) {
+// acquireWaylandVulkan returns the instance for a window to draw with,
+// held for it until releaseWaylandVulkan: the current one if it was made
+// with the device chosen, else a new one. A new one is made with the
+// chosen device's driver alone, if there is one and it loads, so that no
+// other GPU wakes up; with every driver otherwise.
+func acquireWaylandVulkan() (*sharedVulkan, error) {
 	waylandVulkan.Lock()
 	defer waylandVulkan.Unlock()
-	if waylandVulkan.inst != nil {
-		return waylandVulkan.inst, waylandVulkan.device, nil
-	}
 	device := CurrentGraphics().Vulkan
-	var inst vk.Instance
+	if cur := waylandVulkan.current; cur != nil && sameVulkanDevice(cur.device, device) {
+		cur.windows++
+		return cur, nil
+	}
+	inst, err := makeWaylandVulkan(device)
+	if err != nil {
+		return nil, err
+	}
+	if old := waylandVulkan.current; old != nil && old.windows == 0 {
+		destroyWaylandVulkan(old.inst)
+	}
+	waylandVulkan.current = &sharedVulkan{inst: inst, device: device, windows: 1}
+	return waylandVulkan.current, nil
+}
+
+// releaseWaylandVulkan lets a window's hold of s go, destroying it with
+// its last window if it is not the current one.
+func releaseWaylandVulkan(s *sharedVulkan) {
+	waylandVulkan.Lock()
+	defer waylandVulkan.Unlock()
+	s.windows--
+	if s.windows == 0 && s != waylandVulkan.current {
+		destroyWaylandVulkan(s.inst)
+	}
+}
+
+// makeWaylandVulkan and destroyWaylandVulkan make and destroy the shared
+// instances; tests replace them.
+var (
+	makeWaylandVulkan    = newWaylandVulkanInstance
+	destroyWaylandVulkan = vk.DestroyInstance
+)
+
+func newWaylandVulkanInstance(device VulkanDevice) (vk.Instance, error) {
 	if device.Driver != "" {
 		for _, d := range vk.Drivers() {
 			if d.Manifest != device.Driver {
 				continue
 			}
-			if i, err := vk.CreateInstanceFor(d, waylandVulkanExtensions...); err == nil {
-				inst = i
+			if inst, err := vk.CreateInstanceFor(d, waylandVulkanExtensions...); err == nil {
+				return inst, nil
 			}
 			break
 		}
 	}
-	if inst == nil {
-		i, err := vk.CreateInstance(waylandVulkanExtensions...)
-		if err != nil {
-			return nil, VulkanDevice{}, err
-		}
-		inst = i
-	}
-	waylandVulkan.inst, waylandVulkan.device = inst, device
-	return inst, device, nil
+	return vk.CreateInstance(waylandVulkanExtensions...)
 }
 
 // waylandVulkanDevices lists the devices of each driver, with the driver
@@ -180,10 +223,12 @@ func (c *wlVkContext) API() gpu.API {
 	return c.ctx.api()
 }
 
-// Release keeps the instance, which the windows share.
+// Release lets the shared instance go, destroyed with its last window if
+// another device has been chosen since.
 func (c *wlVkContext) Release() {
 	c.ctx.release()
 	vk.DestroySurface(c.inst, c.surf)
+	releaseWaylandVulkan(c.shared)
 	*c = wlVkContext{}
 }
 

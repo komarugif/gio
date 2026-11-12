@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"gioui.org/internal/vk"
 )
@@ -48,4 +49,72 @@ func TestCollectVulkanDevices(t *testing.T) {
 	if err != nil || len(devices) != 1 || devices[0].Driver != "" {
 		t.Fatalf("together: %+v, %v", devices, err)
 	}
+}
+
+// Windows share the instance made with the device chosen; another device
+// chosen makes another for the windows that make their GPU after, and the
+// old one goes with its last window, or at once if it has none.
+func TestWaylandVulkanInstances(t *testing.T) {
+	defer SetGraphics(Graphics{})
+	defer func(m func(VulkanDevice) (vk.Instance, error), d func(vk.Instance)) {
+		makeWaylandVulkan, destroyWaylandVulkan = m, d
+		waylandVulkan.current = nil
+	}(makeWaylandVulkan, destroyWaylandVulkan)
+	waylandVulkan.current = nil
+	made := map[vk.Instance]VulkanDevice{}
+	var destroyed []VulkanDevice
+	// The garbage collector does not follow a vk.Instance, a pointer to
+	// an incomplete C type: the fakes' memory is held here.
+	var fakes []*byte
+	makeWaylandVulkan = func(d VulkanDevice) (vk.Instance, error) {
+		fakes = append(fakes, new(byte))
+		inst := vk.Instance(unsafe.Pointer(fakes[len(fakes)-1]))
+		made[inst] = d
+		return inst, nil
+	}
+	destroyWaylandVulkan = func(inst vk.Instance) { destroyed = append(destroyed, made[inst]) }
+	intel := VulkanDevice{Driver: "intel_icd.x86_64.json", VendorID: 0x8086, DeviceID: 0x4626}
+	nvidia := VulkanDevice{Driver: "nvidia_icd.json", VendorID: 0x10de, DeviceID: 0x25a2}
+	acquire := func() *sharedVulkan {
+		t.Helper()
+		s, err := acquireWaylandVulkan()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	SetGraphics(Graphics{Vulkan: intel})
+	a, b := acquire(), acquire()
+	if a != b || len(made) != 1 {
+		t.Fatalf("two windows on one device made %d instances", len(made))
+	}
+	SetGraphics(Graphics{Vulkan: nvidia})
+	c := acquire()
+	if c == a || c.device != nvidia {
+		t.Fatalf("another device kept the instance of %+v", c.device)
+	}
+	releaseWaylandVulkan(a)
+	if len(destroyed) != 0 {
+		t.Fatal("destroyed an instance a window still draws with")
+	}
+	releaseWaylandVulkan(b)
+	if len(destroyed) != 1 || destroyed[0] != intel {
+		t.Fatalf("with its last window gone, destroyed %+v", destroyed)
+	}
+	releaseWaylandVulkan(c)
+	if len(destroyed) != 1 {
+		t.Fatal("destroyed the current instance with no window on it")
+	}
+	if d := acquire(); d != c {
+		t.Fatal("the current instance was not taken again")
+	} else {
+		releaseWaylandVulkan(d)
+	}
+	SetGraphics(Graphics{Vulkan: intel})
+	e := acquire()
+	if len(destroyed) != 2 || destroyed[1] != nvidia || e.device != intel {
+		t.Fatalf("the old instance with no window was not destroyed at once: %+v", destroyed)
+	}
+	releaseWaylandVulkan(e)
 }
