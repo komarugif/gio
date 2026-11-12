@@ -2094,9 +2094,13 @@ func (w *window) SetInputHint(_ key.InputHint) {}
 func (w *window) EditorStateChanged(old, new editorState) {}
 
 // waylandContexts lists the makers of contexts in the order they are
-// tried with api chosen: EGL's first unless Vulkan is chosen.
-func waylandContexts(api GraphicsAPI) []func(*window) (context, error) {
-	if api == GraphicsVulkan {
+// tried as g chose: EGL's first unless Vulkan is chosen, and EGL's alone
+// where Vulkan has failed.
+func waylandContexts(g Graphics) []func(*window) (context, error) {
+	if g.VulkanFailed {
+		return []func(*window) (context, error){newWaylandEGLContext}
+	}
+	if g.API == GraphicsVulkan {
 		return []func(*window) (context, error){newWaylandVulkanContext, newWaylandEGLContext}
 	}
 	return []func(*window) (context, error){newWaylandEGLContext, newWaylandVulkanContext}
@@ -2104,7 +2108,7 @@ func waylandContexts(api GraphicsAPI) []func(*window) (context, error) {
 
 func (w *window) NewContext() (context, error) {
 	var firstErr error
-	for _, f := range waylandContexts(CurrentGraphics().API) {
+	for _, f := range waylandContexts(CurrentGraphics()) {
 		if f == nil {
 			continue
 		}

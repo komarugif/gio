@@ -758,6 +758,16 @@ Run the focused check from the project root:
     `TestCreateInstanceFor` (each driver alone has the devices of all
     together), `TestCreateInstanceForWithoutTheLoaders` (with the loader
     finding no manifest, a driver loaded alone still has its devices).
+  - Vulkan that cannot draw a window with any driver (no driver, no
+    device, only lavapipe, which windows are not drawn with) sets
+    `Graphics.VulkanFailed`, and the windows after it are drawn with EGL
+    without trying Vulkan (`waylandContexts`): with Vulkan tried first,
+    each window would load every driver again before EGL. A program keeps
+    it across starts by passing it back to `SetGraphics`, and passes it
+    false for Vulkan to be tried again. `TestWaylandVulkanFailed`,
+    `TestWaylandContextsVulkanFailed`; checked on Linux with lavapipe:
+    the window falls back to EGL, and the messenger's next start does
+    not load the Vulkan loader before EGL.
   - `app.VulkanDevices` lists the devices of each driver, loaded alone,
     leaving out those that draw on the CPU: it wakes every GPU up, and is
     for the program to call when the devices are to be shown. A driver

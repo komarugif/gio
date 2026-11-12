@@ -55,6 +55,8 @@ func init() {
 	newWaylandVulkanContext = func(w *window) (context, error) {
 		shared, err := acquireWaylandVulkan()
 		if err != nil {
+			// No driver loads, or none has a device.
+			failVulkan()
 			return nil, err
 		}
 		inst := shared.inst
@@ -75,6 +77,7 @@ func init() {
 				failWaylandVulkan(shared.device)
 				return newWaylandVulkanContext(w)
 			}
+			failVulkan()
 			return nil, err
 		}
 		c := &wlVkContext{

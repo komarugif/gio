@@ -158,3 +158,40 @@ func TestWaylandVulkanFailedDevice(t *testing.T) {
 		t.Fatalf("instances made with %+v", made)
 	}
 }
+
+// A Vulkan that cannot draw with any driver is not tried again by the
+// windows after, which go to EGL at once, until SetGraphics tries it again.
+func TestWaylandVulkanFailed(t *testing.T) {
+	defer SetGraphics(Graphics{})
+	defer func(m func(VulkanDevice) (vk.Instance, error), egl func(*window) (context, error)) {
+		makeWaylandVulkan, newWaylandEGLContext = m, egl
+		waylandVulkan.current, waylandVulkan.failed = nil, nil
+	}(makeWaylandVulkan, newWaylandEGLContext)
+	waylandVulkan.current, waylandVulkan.failed = nil, nil
+	made := 0
+	makeWaylandVulkan = func(VulkanDevice) (vk.Instance, error) {
+		made++
+		return nil, errors.New("vulkan: no driver")
+	}
+	type eglContext struct{ context }
+	newWaylandEGLContext = func(*window) (context, error) { return eglContext{}, nil }
+
+	SetGraphics(Graphics{API: GraphicsVulkan})
+	for i := range 3 {
+		c, err := (*window)(nil).NewContext()
+		if _, ok := c.(eglContext); !ok || err != nil {
+			t.Fatalf("window %d: %v, %v", i, c, err)
+		}
+	}
+	if made != 1 {
+		t.Fatalf("three windows tried Vulkan %d times", made)
+	}
+	if !CurrentGraphics().VulkanFailed {
+		t.Fatal("the failure is not told")
+	}
+	SetGraphics(Graphics{API: GraphicsVulkan})
+	(*window)(nil).NewContext()
+	if made != 2 {
+		t.Fatal("Vulkan chosen again was not tried")
+	}
+}

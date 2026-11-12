@@ -52,6 +52,12 @@ type Graphics struct {
 	// Vulkan is the device windows are drawn with by Vulkan; the zero
 	// value is the first device that can draw them, of any driver.
 	Vulkan VulkanDevice
+	// VulkanFailed is that Vulkan could not draw a window with any device
+	// of any driver: windows are drawn with OpenGL without trying Vulkan,
+	// which would load every driver again. Gio sets it when Vulkan fails
+	// so; a program that keeps it across starts passes it back to
+	// SetGraphics, and passes it false for Vulkan to be tried again.
+	VulkanFailed bool
 }
 
 var graphics atomic.Pointer[Graphics]
@@ -106,7 +112,26 @@ func ResetGPUs() {
 	}
 }
 
-// CurrentGraphics is what SetGraphics set last.
+// failVulkan sets Graphics.VulkanFailed, keeping what SetGraphics set.
+func failVulkan() {
+	for {
+		old := graphics.Load()
+		g := Graphics{}
+		if old != nil {
+			g = *old
+		}
+		if g.VulkanFailed {
+			return
+		}
+		g.VulkanFailed = true
+		if graphics.CompareAndSwap(old, &g) {
+			return
+		}
+	}
+}
+
+// CurrentGraphics is what SetGraphics set last, with VulkanFailed set
+// where Vulkan has failed since.
 func CurrentGraphics() Graphics {
 	if g := graphics.Load(); g != nil {
 		return *g

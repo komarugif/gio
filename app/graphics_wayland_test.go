@@ -23,11 +23,20 @@ func TestWaylandContexts(t *testing.T) {
 		GraphicsVulkan: "vulkan egl",
 	} {
 		tried = nil
-		for _, f := range waylandContexts(api) {
+		for _, f := range waylandContexts(Graphics{API: api}) {
 			f(nil)
 		}
 		if got := tried[0] + " " + tried[1]; got != want {
 			t.Errorf("API %d tries %s, want %s", api, got, want)
+		}
+	}
+}
+
+// Where Vulkan has failed, windows are drawn with EGL without trying it.
+func TestWaylandContextsVulkanFailed(t *testing.T) {
+	for _, api := range []GraphicsAPI{GraphicsAuto, GraphicsOpenGL, GraphicsVulkan} {
+		if c := waylandContexts(Graphics{API: api, VulkanFailed: true}); len(c) != 1 {
+			t.Errorf("API %d tries %d APIs after Vulkan failed", api, len(c))
 		}
 	}
 }
