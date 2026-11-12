@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: Unlicense OR MIT
+
+package app
+
+import "sync/atomic"
+
+// GraphicsAPI is a graphics API windows can be drawn with where there is
+// a choice of them: on Wayland, OpenGL through EGL or Vulkan.
+type GraphicsAPI uint8
+
+const (
+	// GraphicsAuto leaves the API to Gio: OpenGL, Vulkan where OpenGL
+	// fails.
+	GraphicsAuto GraphicsAPI = iota
+	// GraphicsOpenGL draws with OpenGL, Vulkan where OpenGL fails.
+	GraphicsOpenGL
+	// GraphicsVulkan draws with Vulkan, OpenGL where Vulkan fails.
+	GraphicsVulkan
+)
+
+// VulkanDeviceKind is the kind of a Vulkan device.
+type VulkanDeviceKind uint8
+
+const (
+	VulkanDeviceOther VulkanDeviceKind = iota
+	VulkanDeviceIntegrated
+	VulkanDeviceDiscrete
+	VulkanDeviceVirtual
+)
+
+// VulkanDevice is a Vulkan device and the driver that has it, as
+// VulkanDevices lists them.
+type VulkanDevice struct {
+	// Driver is the file name of the driver's manifest, such as
+	// intel_icd.x86_64.json. A device with a driver is drawn with that
+	// driver alone loaded, which wakes no other GPU up. Empty is every
+	// driver, where the loader cannot load one alone.
+	Driver             string
+	VendorID, DeviceID uint32
+	Name               string
+	Kind               VulkanDeviceKind
+	// API is the version of Vulkan the device has, Version its driver's.
+	API, Version string
+}
+
+// Graphics is how windows are drawn where there is a choice.
+type Graphics struct {
+	API GraphicsAPI
+	// Vulkan is the device windows are drawn with by Vulkan; the zero
+	// value is the first device that can draw them, of any driver.
+	Vulkan VulkanDevice
+}
+
+var graphics atomic.Pointer[Graphics]
+
+// SetGraphics sets how windows are drawn, for the GPU each window makes
+// from now on. The Vulkan device is chosen once a process, by the first
+// window drawn with Vulkan: windows share its instance of Vulkan.
+func SetGraphics(g Graphics) {
+	graphics.Store(&g)
+}
+
+// CurrentGraphics is what SetGraphics set last.
+func CurrentGraphics() Graphics {
+	if g := graphics.Load(); g != nil {
+		return *g
+	}
+	return Graphics{}
+}
+
+// graphicsChoice and listVulkanDevices are set where there is a choice.
+var (
+	graphicsChoice    func() bool
+	listVulkanDevices func() ([]VulkanDevice, error)
+)
+
+// GraphicsChoice reports whether the API windows are drawn with can be
+// chosen: they are drawn on Wayland, with OpenGL and Vulkan both built
+// in. It is false until a window has been made.
+func GraphicsChoice() bool {
+	return graphicsChoice != nil && graphicsChoice()
+}
+
+// VulkanDevices lists the Vulkan devices windows can be drawn with, those
+// of each driver with the driver loaded alone. It wakes up every GPU asleep,
+// which a discrete one in a laptop takes seconds to: call it when the
+// devices are to be shown. Devices that draw on the CPU are left out.
+func VulkanDevices() ([]VulkanDevice, error) {
+	if listVulkanDevices == nil {
+		return nil, nil
+	}
+	return listVulkanDevices()
+}

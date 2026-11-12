@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: Unlicense OR MIT
+
+//go:build ((linux && !android) || freebsd) && !nowayland
+
+package app
+
+import (
+	"errors"
+	"testing"
+)
+
+// Windows on Wayland try the API chosen first, and the other where it
+// fails.
+func TestWaylandContexts(t *testing.T) {
+	egl, vulkan := newWaylandEGLContext, newWaylandVulkanContext
+	defer func() { newWaylandEGLContext, newWaylandVulkanContext = egl, vulkan }()
+	var tried []string
+	newWaylandEGLContext = func(*window) (context, error) { tried = append(tried, "egl"); return nil, errors.New("egl") }
+	newWaylandVulkanContext = func(*window) (context, error) { tried = append(tried, "vulkan"); return nil, errors.New("vulkan") }
+	for api, want := range map[GraphicsAPI]string{
+		GraphicsAuto:   "egl vulkan",
+		GraphicsOpenGL: "egl vulkan",
+		GraphicsVulkan: "vulkan egl",
+	} {
+		tried = nil
+		for _, f := range waylandContexts(api) {
+			f(nil)
+		}
+		if got := tried[0] + " " + tried[1]; got != want {
+			t.Errorf("API %d tries %s, want %s", api, got, want)
+		}
+	}
+}

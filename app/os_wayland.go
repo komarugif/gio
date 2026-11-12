@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -295,7 +296,13 @@ var (
 
 func init() {
 	wlDriver = newWLWindow
+	graphicsChoice = func() bool {
+		return waylandWindows.Load() && newWaylandEGLContext != nil && newWaylandVulkanContext != nil
+	}
 }
+
+// waylandWindows is whether a window was made on Wayland.
+var waylandWindows atomic.Bool
 
 func newWLWindow(callbacks *callbacks, options []Option) error {
 	d, err := newWLDisplay()
@@ -309,6 +316,7 @@ func newWLWindow(callbacks *callbacks, options []Option) error {
 	}
 	w.w = callbacks
 	w.w.SetDriver(w)
+	waylandWindows.Store(true)
 
 	// Finish and commit setup from createNativeWindow.
 	w.Configure(options)
@@ -2085,21 +2093,28 @@ func (w *window) SetInputHint(_ key.InputHint) {}
 
 func (w *window) EditorStateChanged(old, new editorState) {}
 
+// waylandContexts lists the makers of contexts in the order they are
+// tried with api chosen: EGL's first unless Vulkan is chosen.
+func waylandContexts(api GraphicsAPI) []func(*window) (context, error) {
+	if api == GraphicsVulkan {
+		return []func(*window) (context, error){newWaylandVulkanContext, newWaylandEGLContext}
+	}
+	return []func(*window) (context, error){newWaylandEGLContext, newWaylandVulkanContext}
+}
+
 func (w *window) NewContext() (context, error) {
 	var firstErr error
-	if f := newWaylandEGLContext; f != nil {
+	for _, f := range waylandContexts(CurrentGraphics().API) {
+		if f == nil {
+			continue
+		}
 		c, err := f(w)
 		if err == nil {
 			return c, nil
 		}
-		firstErr = err
-	}
-	if f := newWaylandVulkanContext; f != nil {
-		c, err := f(w)
-		if err == nil {
-			return c, nil
+		if firstErr == nil {
+			firstErr = err
 		}
-		firstErr = err
 	}
 	if firstErr != nil {
 		return nil, firstErr

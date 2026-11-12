@@ -218,13 +218,29 @@ func newOpenGLDevice(api driver.OpenGL) (driver.Device, error) {
 	b.feats.MaxTextureSize = f.GetInteger(gl.MAX_TEXTURE_SIZE)
 	renderer := f.GetString(gl.RENDERER)
 	b.feats.Software = softwareRenderer(renderer)
-	b.feats.Device = renderer + ", " + f.GetString(gl.VERSION)
+	b.feats.Device = renderer
+	b.feats.API, b.feats.Driver = splitGLVersion(f.GetString(gl.VERSION))
 	if !b.sharedCtx {
 		// We have exclusive access to the context, so query the GL state once
 		// instead of at each frame.
 		b.glstate = b.queryState()
 	}
 	return b, nil
+}
+
+// splitGLVersion parts a GL_VERSION string, such as "OpenGL ES 3.2 Mesa
+// 26.1.6" or "4.6.0 NVIDIA 610.43.03", into the API with its version and
+// what the driver adds of itself.
+func splitGLVersion(version string) (api, driver string) {
+	prefix, rest := "OpenGL ", version
+	if after, ok := strings.CutPrefix(version, "OpenGL ES "); ok {
+		prefix, rest = "OpenGL ES ", after
+	}
+	ver, driver, _ := strings.Cut(rest, " ")
+	if ver == "" {
+		return version, ""
+	}
+	return prefix + ver, strings.TrimSpace(driver)
 }
 
 // softwareRenderer reports whether the GL_RENDERER string names a renderer

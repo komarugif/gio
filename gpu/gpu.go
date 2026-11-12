@@ -16,6 +16,7 @@ import (
 	"math"
 	"math/bits"
 	"slices"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -382,13 +383,30 @@ func Software(g GPU) bool {
 	return ok && gg.ctx.Caps().Software
 }
 
-// Device names the device g draws with and its driver, as its API tells
-// them; empty if it tells nothing.
-func Device(g GPU) string {
-	if gg, ok := g.(*gpu); ok {
-		return gg.ctx.Caps().Device
+// DeviceInfo is what a GPU's API tells of it: the API with its version,
+// the device and its driver. Empty fields are what the API does not tell.
+type DeviceInfo struct {
+	API, Device, Driver string
+}
+
+// String puts the fields that are known together, the device first.
+func (d DeviceInfo) String() string {
+	var parts []string
+	for _, p := range []string{d.Device, d.API, d.Driver} {
+		if p != "" {
+			parts = append(parts, p)
+		}
 	}
-	return ""
+	return strings.Join(parts, ", ")
+}
+
+// Device tells what g draws with, as its API names it.
+func Device(g GPU) DeviceInfo {
+	if gg, ok := g.(*gpu); ok {
+		c := gg.ctx.Caps()
+		return DeviceInfo{API: c.API, Device: c.Device, Driver: c.Driver}
+	}
+	return DeviceInfo{}
 }
 
 func newGPU(ctx driver.Device) *gpu {

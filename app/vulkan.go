@@ -31,7 +31,13 @@ type vkContext struct {
 }
 
 func newVulkanContext(inst vk.Instance, surf vk.Surface) (*vkContext, error) {
-	physDev, qFam, err := vk.ChoosePhysicalDevice(inst, surf)
+	return newPreferredVulkanContext(inst, surf, 0, 0)
+}
+
+// newPreferredVulkanContext is newVulkanContext drawing with the device of
+// vendorID and deviceID where it can draw.
+func newPreferredVulkanContext(inst vk.Instance, surf vk.Surface, vendorID, deviceID uint32) (*vkContext, error) {
+	physDev, qFam, err := vk.ChoosePreferredPhysicalDevice(inst, surf, vendorID, deviceID)
 	if err != nil {
 		return nil, err
 	}

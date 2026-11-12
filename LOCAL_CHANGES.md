@@ -687,20 +687,22 @@ Run the focused check from the project root:
     on average, `buildPaths` 0.48 → 0.07 s of CPU over 15 s.
   - `TestPathKeptOverFrames` draws a path of kept ops beside new ones,
     first in the frame the buffer shrinks in after a large first frame.
-- `gpu.Device`, `app.GPUDevice` (`gpu/internal/driver.Caps.Device`): the device
-  and the driver windows are drawn with, as the API names them: OpenGL's
-  `GL_RENDERER` and `GL_VERSION`, Direct3D 11's adapter with its vendor's
-  and device's ids and its driver's version (`CheckInterfaceSupport` for
-  `IDXGIDevice`, as Chromium asks it), Vulkan's physical device with its
-  versions of Vulkan and of the driver (NVIDIA's in its own packing),
-  Metal's device name. `app.GPUDevice` is the GPU made last for a window, as
-  `app.SoftwareRendered` is. The messenger's profiler records it: on a
-  machine with two GPUs nothing else told which of them drew, since the
-  libraries of both are loaded and Go's CPU profile shows no C frames.
-  `gpu/headless` `TestDevice`, on Linux with OpenGL and with Vulkan on
-  lavapipe (EGL hidden by `__EGL_VENDOR_LIBRARY_FILENAMES`); Direct3D 11
-  told "NVIDIA GeForce RTX 5060 (10de:2d05), driver 32.0.16.2114" on
-  Windows. Metal not compiled.
+- `gpu.Device`, `app.GPUInfo` (`gpu/internal/driver.Caps.API`, `Device`,
+  `Driver`): the graphics API, the device and the driver windows are drawn
+  with, as the API names them: OpenGL's `GL_VERSION` (parted into the API
+  and what the driver adds) and `GL_RENDERER`, Direct3D 11's adapter with
+  its vendor's and device's ids and its driver's version
+  (`CheckInterfaceSupport` for `IDXGIDevice`, as Chromium asks it), Vulkan's
+  physical device with its versions of Vulkan and of the driver (NVIDIA's
+  in its own packing), Metal's device name. `app.GPUInfo` is the GPU made
+  last for a window, as `app.SoftwareRendered` is. The messenger's settings
+  and profiler show it: on a machine with two GPUs nothing else told which
+  of them drew, since the libraries of both are loaded and Go's CPU profile
+  shows no C frames. `gpu/headless` `TestDevice`, on Linux with OpenGL and
+  with Vulkan on lavapipe (EGL hidden by `__EGL_VENDOR_LIBRARY_FILENAMES`);
+  `gpu/internal/opengl` `TestSplitGLVersion`; Direct3D 11 told "NVIDIA
+  GeForce RTX 5060 (10de:2d05), driver 32.0.16.2114" on Windows. Metal not
+  compiled.
 - `internal/vk/vulkan.go` (`compositeAlpha`): a swapchain's images are taken
   with premultiplied alpha where the surface allows it. Upstream took the
   first mode the surface has, the opaque one, saying rendering is always
@@ -710,3 +712,38 @@ Run the focused check from the project root:
   already. It applies to Android's Vulkan as well; an opaque window paints
   every pixel opaque and looks the same. `TestCompositeAlpha`; not seen on
   a screen yet.
+- `app.SetGraphics`, `app.GraphicsChoice`, `app.VulkanDevices`
+  (`app/graphics.go`, `app/vulkan_wayland.go`, `app/os_wayland.go`,
+  `internal/vk/drivers.go`): on Wayland the program chooses the graphics
+  API windows are drawn with, and the Vulkan device. Upstream tried EGL,
+  then Vulkan, and gave Vulkan every driver of the system; on a laptop
+  whose discrete NVIDIA was asleep, the first window drawn with Vulkan
+  waited seconds for it to wake up, though the Intel one drew (1.6 s of
+  the kernel in `vulkaninfo`, none with `VK_LOADER_DRIVERS_SELECT=*intel*`).
+  - `waylandContexts` tries the chosen API first and the other where it
+    fails. `TestWaylandContexts`.
+  - The windows on Wayland share one instance of Vulkan, made by the first
+    drawn with Vulkan and kept for the process; each had an instance of
+    its own, which loaded every driver again. A window's device and
+    swapchain stay its own. The device is chosen once a process, as the
+    instance is made.
+  - With a device chosen, the instance is made with its driver alone
+    (`vk.CreateInstanceFor`): the driver's library, from its manifest found
+    where the loader looks (`vk.Drivers`), is handed to the loader with
+    `VK_LUNARG_direct_driver_loading` in its exclusive mode, so that no
+    other driver loads and no other GPU wakes. Setting
+    `VK_LOADER_DRIVERS_SELECT` in the process would do it too, but
+    `setenv` races with C code reading the environment in other threads.
+    The extension needs Vulkan-Loader 1.3.238; without it, or where the
+    driver does not load, every driver is loaded as before. The structures
+    are declared for headers older than the extension.
+    `vk.ChoosePreferredPhysicalDevice` takes the device of the chosen ids
+    where it can draw, the first that can otherwise. `TestDriversIn`,
+    `TestCreateInstanceFor` (each driver alone has the devices of all
+    together), `TestCreateInstanceForWithoutTheLoaders` (with the loader
+    finding no manifest, a driver loaded alone still has its devices).
+  - `app.VulkanDevices` lists the devices of each driver, loaded alone,
+    leaving out those that draw on the CPU: it wakes every GPU up, and is
+    for the program to call when the devices are to be shown.
+  Checked on Linux with lavapipe, which windows are not drawn with: the
+  window on Vulkan with a chosen device on a laptop is not checked yet.

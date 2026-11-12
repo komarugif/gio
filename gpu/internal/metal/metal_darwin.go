@@ -430,7 +430,7 @@ import "C"
 
 type Backend struct {
 	dev      C.CFTypeRef
-	device   string // what Caps tells of dev
+	device   string // the name of dev
 	queue    C.CFTypeRef
 	pixelFmt C.MTLPixelFormat
 
@@ -513,7 +513,7 @@ func newMetalDevice(api driver.Metal) (driver.Device, error) {
 	defer C.free(unsafe.Pointer(name))
 	b := &Backend{
 		dev:      dev,
-		device:   "Metal: " + C.GoString(name),
+		device:   C.GoString(name),
 		queue:    queue,
 		pixelFmt: C.MTLPixelFormat(api.PixelFormat),
 		bufSizes: make([]uint32, bufferUnits),
@@ -602,6 +602,7 @@ func (b *Backend) Caps() driver.Caps {
 	return driver.Caps{
 		MaxTextureSize: 8192,
 		Features:       driver.FeatureSRGB | driver.FeatureCompute | driver.FeatureFloatRenderTargets,
+		API:            "Metal",
 		Device:         b.device,
 	}
 }

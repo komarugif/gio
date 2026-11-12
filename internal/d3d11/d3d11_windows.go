@@ -1634,18 +1634,18 @@ func IsSoftware(dev *Device) bool {
 	return desc.VendorId == 0x1414 && desc.DeviceId == 0x8c
 }
 
-// DeviceName names the adapter of dev, its vendor's and device's ids and
-// the version of its driver, if the adapter tells it.
-func DeviceName(dev *Device) string {
-	desc, driver, err := adapterDesc(dev)
+// DeviceName names the adapter of dev with its vendor's and device's ids,
+// and the version of its driver, if the adapter tells it.
+func DeviceName(dev *Device) (name, driver string) {
+	desc, version, err := adapterDesc(dev)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	name := fmt.Sprintf("%s (%04x:%04x)", windows.UTF16ToString(desc.Description[:]), desc.VendorId, desc.DeviceId)
-	if driver != 0 {
-		name += fmt.Sprintf(", driver %d.%d.%d.%d", driver>>48, driver>>32&0xffff, driver>>16&0xffff, driver&0xffff)
+	name = fmt.Sprintf("%s (%04x:%04x)", windows.UTF16ToString(desc.Description[:]), desc.VendorId, desc.DeviceId)
+	if version != 0 {
+		driver = fmt.Sprintf("%d.%d.%d.%d", version>>48, version>>32&0xffff, version>>16&0xffff, version&0xffff)
 	}
-	return name
+	return name, driver
 }
 
 // adapterDesc describes the adapter of dev, with the version of its user

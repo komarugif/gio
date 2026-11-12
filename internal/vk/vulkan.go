@@ -16,6 +16,52 @@ package vk
 #include <dlfcn.h>
 #include <stdlib.h>
 
+#ifndef VK_LUNARG_direct_driver_loading
+// VK_LUNARG_direct_driver_loading, for headers older than it (1.3.236).
+typedef enum VkDirectDriverLoadingModeLUNARG {
+	VK_DIRECT_DRIVER_LOADING_MODE_EXCLUSIVE_LUNARG = 0,
+	VK_DIRECT_DRIVER_LOADING_MODE_INCLUSIVE_LUNARG = 1,
+} VkDirectDriverLoadingModeLUNARG;
+typedef VkFlags VkDirectDriverLoadingFlagsLUNARG;
+typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddrLUNARG)(VkInstance instance, const char *pName);
+typedef struct VkDirectDriverLoadingInfoLUNARG {
+	VkStructureType sType;
+	void *pNext;
+	VkDirectDriverLoadingFlagsLUNARG flags;
+	PFN_vkGetInstanceProcAddrLUNARG pfnGetInstanceProcAddr;
+} VkDirectDriverLoadingInfoLUNARG;
+typedef struct VkDirectDriverLoadingListLUNARG {
+	VkStructureType sType;
+	const void *pNext;
+	VkDirectDriverLoadingModeLUNARG mode;
+	uint32_t driverCount;
+	const VkDirectDriverLoadingInfoLUNARG *pDrivers;
+} VkDirectDriverLoadingListLUNARG;
+#define VK_STRUCTURE_TYPE_DIRECT_DRIVER_LOADING_INFO_LUNARG ((VkStructureType)1000459000)
+#define VK_STRUCTURE_TYPE_DIRECT_DRIVER_LOADING_LIST_LUNARG ((VkStructureType)1000459001)
+#endif
+
+// vkCreateInstanceDriver creates an instance with the driver whose entry
+// point is gipa alone, the loader loading no other.
+static VkResult vkCreateInstanceDriver(PFN_vkCreateInstance f, VkInstanceCreateInfo inf, void *gipa, VkInstance *pInstance) {
+	VkDirectDriverLoadingInfoLUNARG driver = {
+		.sType = VK_STRUCTURE_TYPE_DIRECT_DRIVER_LOADING_INFO_LUNARG,
+		.pfnGetInstanceProcAddr = (PFN_vkGetInstanceProcAddrLUNARG)gipa,
+	};
+	VkDirectDriverLoadingListLUNARG list = {
+		.sType = VK_STRUCTURE_TYPE_DIRECT_DRIVER_LOADING_LIST_LUNARG,
+		.mode = VK_DIRECT_DRIVER_LOADING_MODE_EXCLUSIVE_LUNARG,
+		.driverCount = 1,
+		.pDrivers = &driver,
+	};
+	inf.pNext = &list;
+	return f(&inf, NULL, pInstance);
+}
+
+static VkResult vkEnumerateInstanceExtensionProperties(PFN_vkEnumerateInstanceExtensionProperties f, uint32_t *pPropertyCount, VkExtensionProperties *pProperties) {
+	return f(NULL, pPropertyCount, pProperties);
+}
+
 static VkResult vkCreateInstance(PFN_vkCreateInstance f, VkInstanceCreateInfo pCreateInfo, const VkAllocationCallbacks *pAllocator, VkInstance *pInstance) {
 	return f(&pCreateInfo, pAllocator, pInstance);
 }
@@ -595,6 +641,7 @@ var (
 
 var funcs struct {
 	vkCreateInstance                         C.PFN_vkCreateInstance
+	vkEnumerateInstanceExtensionProperties   C.PFN_vkEnumerateInstanceExtensionProperties
 	vkDestroyInstance                        C.PFN_vkDestroyInstance
 	vkEnumeratePhysicalDevices               C.PFN_vkEnumeratePhysicalDevices
 	vkGetPhysicalDeviceQueueFamilyProperties C.PFN_vkGetPhysicalDeviceQueueFamilyProperties
@@ -736,6 +783,7 @@ func vkInit() error {
 			return nil
 		}
 		funcs.vkCreateInstance = must("vkCreateInstance")
+		funcs.vkEnumerateInstanceExtensionProperties = dlopen("vkEnumerateInstanceExtensionProperties")
 		funcs.vkDestroyInstance = must("vkDestroyInstance")
 		funcs.vkEnumeratePhysicalDevices = must("vkEnumeratePhysicalDevices")
 		funcs.vkGetPhysicalDeviceQueueFamilyProperties = must("vkGetPhysicalDeviceQueueFamilyProperties")
@@ -834,6 +882,85 @@ func vkInit() error {
 }
 
 func CreateInstance(exts ...string) (Instance, error) {
+	return createInstance(nil, exts)
+}
+
+// directDriverLoading is the extension of the loader that CreateInstanceFor
+// needs, in Vulkan-Loader 1.3.238 and later.
+const directDriverLoading = "VK_LUNARG_direct_driver_loading"
+
+// CreateInstanceFor is CreateInstance with driver alone: the loader loads
+// no other driver, and wakes no other GPU up, as a discrete one asleep in a
+// laptop takes seconds to. It fails where the loader lacks
+// VK_LUNARG_direct_driver_loading or the driver's library does not load.
+func CreateInstanceFor(driver Driver, exts ...string) (Instance, error) {
+	if err := vkInit(); err != nil {
+		return nil, err
+	}
+	if !instanceExtension(directDriverLoading) {
+		return nil, fmt.Errorf("vulkan: the loader lacks %s", directDriverLoading)
+	}
+	gipa, err := driverEntry(driver.Library)
+	if err != nil {
+		return nil, err
+	}
+	return createInstance(gipa, append([]string{directDriverLoading}, exts...))
+}
+
+var driverEntries struct {
+	sync.Mutex
+	gipa map[string]unsafe.Pointer
+}
+
+// driverEntry loads the library of a driver and finds its entry point,
+// once a process: the library stays loaded.
+func driverEntry(lib string) (unsafe.Pointer, error) {
+	driverEntries.Lock()
+	defer driverEntries.Unlock()
+	if gipa, ok := driverEntries.gipa[lib]; ok {
+		return gipa, nil
+	}
+	h := dlopen(lib)
+	if h == nil {
+		return nil, fmt.Errorf("vulkan: %s", C.GoString(C.dlerror()))
+	}
+	gipa := dlsym(h, "vk_icdGetInstanceProcAddr")
+	if gipa == nil {
+		return nil, fmt.Errorf("vulkan: %s has no vk_icdGetInstanceProcAddr", lib)
+	}
+	if driverEntries.gipa == nil {
+		driverEntries.gipa = make(map[string]unsafe.Pointer)
+	}
+	driverEntries.gipa[lib] = gipa
+	return gipa, nil
+}
+
+// instanceExtension reports whether the loader or a layer has the instance
+// extension name.
+func instanceExtension(name string) bool {
+	f := funcs.vkEnumerateInstanceExtensionProperties
+	if f == nil {
+		return false
+	}
+	var count C.uint32_t
+	if C.vkEnumerateInstanceExtensionProperties(f, &count, nil) != C.VK_SUCCESS || count == 0 {
+		return false
+	}
+	props := make([]C.VkExtensionProperties, count)
+	if r := C.vkEnumerateInstanceExtensionProperties(f, &count, &props[0]); r != C.VK_SUCCESS && r != C.VK_INCOMPLETE {
+		return false
+	}
+	for _, p := range props[:count] {
+		if C.GoString(&p.extensionName[0]) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// createInstance creates an instance with exts, with every driver or, if
+// gipa is not nil, with the driver whose entry point it is alone.
+func createInstance(gipa unsafe.Pointer, exts []string) (Instance, error) {
 	if err := vkInit(); err != nil {
 		return nil, err
 	}
@@ -858,7 +985,13 @@ func CreateInstance(exts ...string) (Instance, error) {
 		inf.ppEnabledExtensionNames = &cexts[0]
 	}
 	var inst Instance
-	if err := vkErr(C.vkCreateInstance(funcs.vkCreateInstance, inf, nil, &inst)); err != nil {
+	res := C.VkResult(0)
+	if gipa == nil {
+		res = C.vkCreateInstance(funcs.vkCreateInstance, inf, nil, &inst)
+	} else {
+		res = C.vkCreateInstanceDriver(funcs.vkCreateInstance, inf, gipa, &inst)
+	}
+	if err := vkErr(res); err != nil {
 		return nil, fmt.Errorf("vulkan: vkCreateInstance: %w", err)
 	}
 	return inst, nil
@@ -910,10 +1043,19 @@ func EnumeratePhysicalDevices(inst Instance) ([]PhysicalDevice, error) {
 }
 
 func ChoosePhysicalDevice(inst Instance, surf Surface) (PhysicalDevice, int, error) {
+	return ChoosePreferredPhysicalDevice(inst, surf, 0, 0)
+}
+
+// ChoosePreferredPhysicalDevice is ChoosePhysicalDevice choosing the device
+// with vendorID and deviceID where it can draw, the first device that can
+// otherwise.
+func ChoosePreferredPhysicalDevice(inst Instance, surf Surface, vendorID, deviceID uint32) (PhysicalDevice, int, error) {
 	devs, err := EnumeratePhysicalDevices(inst)
 	if err != nil {
 		return nil, 0, err
 	}
+	var first PhysicalDevice
+	firstQueue := 0
 	for _, pd := range devs {
 		var props C.VkPhysicalDeviceProperties
 		C.vkGetPhysicalDeviceProperties(funcs.vkGetPhysicalDeviceProperties, pd, &props)
@@ -943,9 +1085,20 @@ func ChoosePhysicalDevice(inst Instance, surf Surface) (PhysicalDevice, int, err
 				continue
 			}
 		}
-		return pd, queueIdx, nil
+		if (vendorID != 0 || deviceID != 0) && uint32(props.vendorID) == vendorID && uint32(props.deviceID) == deviceID {
+			return pd, queueIdx, nil
+		}
+		if first == nil {
+			first, firstQueue = pd, queueIdx
+		}
+		if vendorID == 0 && deviceID == 0 {
+			break
+		}
 	}
-	return nil, 0, errors.New("vulkan: no suitable device found")
+	if first == nil {
+		return nil, 0, errors.New("vulkan: no suitable device found")
+	}
+	return first, firstQueue, nil
 }
 
 func CreateDeviceAndQueue(pd C.VkPhysicalDevice, queueIdx int, exts ...string) (Device, error) {
@@ -1389,20 +1542,74 @@ func CmdDrawIndexed(cmdBuf CommandBuffer, idxCount, instCount, firstIdx, vertOff
 	C.vkCmdDrawIndexed(funcs.vkCmdDrawIndexed, cmdBuf, C.uint32_t(idxCount), C.uint32_t(instCount), C.uint32_t(firstIdx), C.int32_t(vertOff), C.uint32_t(firstInst))
 }
 
-// PhysicalDeviceName names physDev, its vendor's and device's ids, the
-// version of Vulkan it has and the version of its driver.
-func PhysicalDeviceName(physDev PhysicalDevice) string {
+// PhysicalDeviceType is the kind of a physical device, as
+// VkPhysicalDeviceType tells it.
+type PhysicalDeviceType uint32
+
+const (
+	PhysicalDeviceOther PhysicalDeviceType = iota
+	PhysicalDeviceIntegrated
+	PhysicalDeviceDiscrete
+	PhysicalDeviceVirtual
+	// PhysicalDeviceCPU draws on the CPU, as lavapipe does; windows are
+	// not drawn with it.
+	PhysicalDeviceCPU
+)
+
+// PhysicalDeviceInfo is what a physical device tells of itself.
+type PhysicalDeviceInfo struct {
+	Name                      string
+	VendorID, DeviceID        uint32
+	Type                      PhysicalDeviceType
+	APIVersion, DriverVersion uint32
+}
+
+// DescribePhysicalDevice tells what physDev is.
+func DescribePhysicalDevice(physDev PhysicalDevice) PhysicalDeviceInfo {
 	var props C.VkPhysicalDeviceProperties
 	C.vkGetPhysicalDeviceProperties(funcs.vkGetPhysicalDeviceProperties, physDev, &props)
-	name := C.GoString(&props.deviceName[0])
-	api, drv := uint32(props.apiVersion), uint32(props.driverVersion)
-	driver := fmt.Sprintf("%d.%d.%d", drv>>22, drv>>12&0x3ff, drv&0xfff)
-	if props.vendorID == 0x10de {
-		// NVIDIA packs its own version: 10, 8, 8 and 6 bits.
-		driver = fmt.Sprintf("%d.%d.%d", drv>>22, drv>>14&0xff, drv>>6&0xff)
+	return PhysicalDeviceInfo{
+		Name:          C.GoString(&props.deviceName[0]),
+		VendorID:      uint32(props.vendorID),
+		DeviceID:      uint32(props.deviceID),
+		Type:          PhysicalDeviceType(props.deviceType),
+		APIVersion:    uint32(props.apiVersion),
+		DriverVersion: uint32(props.driverVersion),
 	}
-	return fmt.Sprintf("%s (%04x:%04x), Vulkan %d.%d.%d, driver %s",
-		name, uint32(props.vendorID), uint32(props.deviceID), api>>22&0x7f, api>>12&0x3ff, api&0xfff, driver)
+}
+
+// PhysicalDevices describes the physical devices of inst.
+func PhysicalDevices(inst Instance) ([]PhysicalDeviceInfo, error) {
+	devs, err := EnumeratePhysicalDevices(inst)
+	if err != nil {
+		return nil, err
+	}
+	infos := make([]PhysicalDeviceInfo, len(devs))
+	for i, pd := range devs {
+		infos[i] = DescribePhysicalDevice(pd)
+	}
+	return infos, nil
+}
+
+// Device names the device with its vendor's and device's ids.
+func (i PhysicalDeviceInfo) Device() string {
+	return fmt.Sprintf("%s (%04x:%04x)", i.Name, i.VendorID, i.DeviceID)
+}
+
+// API is the version of Vulkan the device has.
+func (i PhysicalDeviceInfo) API() string {
+	v := i.APIVersion
+	return fmt.Sprintf("Vulkan %d.%d.%d", v>>22&0x7f, v>>12&0x3ff, v&0xfff)
+}
+
+// Driver is the version of the device's driver.
+func (i PhysicalDeviceInfo) Driver() string {
+	v := i.DriverVersion
+	if i.VendorID == 0x10de {
+		// NVIDIA packs its own version: 10, 8, 8 and 6 bits.
+		return fmt.Sprintf("%d.%d.%d", v>>22, v>>14&0xff, v>>6&0xff)
+	}
+	return fmt.Sprintf("%d.%d.%d", v>>22, v>>12&0x3ff, v&0xfff)
 }
 
 func GetPhysicalDeviceFormatProperties(physDev PhysicalDevice, format Format) FormatFeatureFlags {

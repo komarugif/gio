@@ -149,8 +149,8 @@ func newTestWindow(t *testing.T) (*Window, func()) {
 	}
 }
 
-// TestDevice checks that a GPU names its device and driver, as the
-// messenger's profiler records them.
+// TestDevice checks that a GPU names its API, its device and its driver,
+// as the messenger's settings and profiler show them.
 func TestDevice(t *testing.T) {
 	w, release := newTestWindow(t)
 	defer release()
@@ -158,8 +158,8 @@ func TestDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := gpu.Device(w.gpu)
-	if d == "" {
-		t.Fatal("no device")
+	if d.API == "" || d.Device == "" || d.Driver == "" {
+		t.Fatalf("%#v", d)
 	}
 	t.Log(d)
 }
