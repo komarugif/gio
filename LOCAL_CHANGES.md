@@ -696,3 +696,12 @@ Run the focused check from the project root:
   lavapipe (EGL hidden by `__EGL_VENDOR_LIBRARY_FILENAMES`); Direct3D 11
   told "NVIDIA GeForce RTX 5060 (10de:2d05), driver 32.0.16.2114" on
   Windows. Metal not compiled.
+- `internal/vk/vulkan.go` (`compositeAlpha`): a swapchain's images are taken
+  with premultiplied alpha where the surface allows it. Upstream took the
+  first mode the surface has, the opaque one, saying rendering is always
+  opaque; on Wayland Mesa then gives the compositor images without alpha,
+  and a transparent window drawn with Vulkan was opaque, without its blur
+  behind (KWin, Intel through Mesa 26.1.6). EGL's surfaces have alpha
+  already. It applies to Android's Vulkan as well; an opaque window paints
+  every pixel opaque and looks the same. `TestCompositeAlpha`; not seen on
+  a screen yet.

@@ -988,6 +988,25 @@ func GetPhysicalDeviceSurfaceCapabilities(pd PhysicalDevice, surf Surface) (Surf
 	return caps, nil
 }
 
+// compositeAlpha chooses how the compositor takes the alpha of the
+// swapchain's images, of the modes in supported: premultiplied if it can,
+// else the first. Gio draws with premultiplied alpha, and a transparent
+// window needs the compositor to take it so: with the opaque mode, which
+// is the first, Mesa's Wayland surfaces have no alpha, and the window is
+// opaque, with nothing for a blur behind it to show. EGL's surfaces have
+// alpha as well. An opaque window paints every pixel opaque and looks the
+// same either way.
+func compositeAlpha(supported uint32) uint32 {
+	if premultiplied := uint32(C.VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR); supported&premultiplied != 0 {
+		return premultiplied
+	}
+	mode := uint32(1)
+	for supported&mode == 0 {
+		mode <<= 1
+	}
+	return mode
+}
+
 func CreateSwapchain(pd PhysicalDevice, d Device, surf Surface, width, height int, old Swapchain) (Swapchain, []Image, Format, error) {
 	caps, err := GetPhysicalDeviceSurfaceCapabilities(pd, surf)
 	if err != nil {
@@ -1006,12 +1025,7 @@ func CreateSwapchain(pd PhysicalDevice, d Device, surf Surface, width, height in
 		// one valid format and present mode.
 		return nilSwapchain, nil, 0, errors.New("vulkan: no valid format and present mode found")
 	}
-	// Find supported alpha composite mode. It doesn't matter which one, because rendering is
-	// always opaque.
-	alphaComp := C.VkCompositeAlphaFlagBitsKHR(1)
-	for caps.supportedCompositeAlpha&C.VkCompositeAlphaFlagsKHR(alphaComp) == 0 {
-		alphaComp <<= 1
-	}
+	alphaComp := C.VkCompositeAlphaFlagBitsKHR(compositeAlpha(uint32(caps.supportedCompositeAlpha)))
 	trans := C.VkSurfaceTransformFlagBitsKHR(C.VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
 	if caps.supportedTransforms&C.VkSurfaceTransformFlagsKHR(trans) == 0 {
 		return nilSwapchain, nil, 0, errors.New("vulkan: VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR not supported")
