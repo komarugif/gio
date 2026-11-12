@@ -139,11 +139,26 @@ func CurrentGraphics() Graphics {
 	return Graphics{}
 }
 
-// graphicsChoice and listVulkanDevices are set where there is a choice.
+// graphicsChoice, listVulkanDevices and currentVulkanDriver are set where
+// there is a choice.
 var (
-	graphicsChoice    func() bool
-	listVulkanDevices func() ([]VulkanDevice, error)
+	graphicsChoice      func() bool
+	listVulkanDevices   func() ([]VulkanDevice, error)
+	currentVulkanDriver func() string
 )
+
+// VulkanDriver is the file name of the manifest of the driver that the
+// Vulkan instance windows draw with now was made with alone: the chosen
+// device's or, with none chosen, that of the device the compositor draws
+// with. A program may keep it with the device GPUInfo tells, to choose
+// that device at the next start without listing the devices. It is empty
+// where the instance was made with every driver, or there is none.
+func VulkanDriver() string {
+	if currentVulkanDriver == nil {
+		return ""
+	}
+	return currentVulkanDriver()
+}
 
 // GraphicsChoice reports whether the API windows are drawn with can be
 // chosen: they are drawn on Wayland, with OpenGL and Vulkan both built

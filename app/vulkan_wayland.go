@@ -6,8 +6,15 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"gioui.org/gpu"
 	"gioui.org/internal/vk"
@@ -22,13 +29,29 @@ type wlVkContext struct {
 }
 
 // sharedVulkan is an instance of Vulkan that windows on Wayland share,
-// made with a device: making an instance loads drivers, which wakes their
+// made as they want it: making an instance loads drivers, which wakes their
 // GPUs up.
 type sharedVulkan struct {
-	inst   vk.Instance
-	device VulkanDevice
+	inst vk.Instance
+	want vulkanWant
+	// driver is the manifest of the driver the instance was made with
+	// alone; empty where it was made with every driver.
+	driver string
 	// windows is how many contexts hold the instance.
 	windows int
+}
+
+// vulkanWant is the instance windows want: with the driver of device
+// alone where alone is set, of the compositor's device where no device is
+// chosen; with every driver otherwise. Windows draw with device, the
+// first that can draw where it is zero.
+type vulkanWant struct {
+	device VulkanDevice
+	alone  bool
+}
+
+func (w vulkanWant) same(o vulkanWant) bool {
+	return w.alone == o.alone && sameVulkanDevice(w.device, o.device)
 }
 
 // waylandVulkan is the instance that windows made now take: made by the
@@ -41,6 +64,10 @@ var waylandVulkan struct {
 	// failed is a device a window could not draw with: windows draw with
 	// any device instead, of every driver, until another is chosen.
 	failed *VulkanDevice
+	// compositorFailed is that the driver of the compositor's device
+	// alone could not draw a window: with no device chosen, windows draw
+	// with every driver.
+	compositorFailed bool
 }
 
 // sameVulkanDevice reports whether a and b are the same device of the same
@@ -53,7 +80,7 @@ var waylandVulkanExtensions = []string{"VK_KHR_surface", "VK_KHR_wayland_surface
 
 func init() {
 	newWaylandVulkanContext = func(w *window) (context, error) {
-		shared, err := acquireWaylandVulkan()
+		shared, want, err := acquireWaylandVulkan()
 		if err != nil {
 			// No driver loads, or none has a device.
 			failVulkan()
@@ -67,14 +94,14 @@ func init() {
 			releaseWaylandVulkan(shared)
 			return nil, err
 		}
-		ctx, err := newPreferredVulkanContext(inst, surf, shared.device.VendorID, shared.device.DeviceID)
+		ctx, err := newPreferredVulkanContext(inst, surf, want.device.VendorID, want.device.DeviceID)
 		if err != nil {
 			vk.DestroySurface(inst, surf)
 			releaseWaylandVulkan(shared)
-			if shared.device != (VulkanDevice{}) {
-				// The device chosen, or its driver alone, cannot draw the
-				// window: any device of every driver may.
-				failWaylandVulkan(shared.device)
+			if shared.driver != "" {
+				// The driver loaded alone cannot draw the window: any
+				// device of every driver may.
+				failWaylandVulkan(want)
 				return newWaylandVulkanContext(w)
 			}
 			failVulkan()
@@ -90,47 +117,73 @@ func init() {
 		return c, nil
 	}
 	listVulkanDevices = waylandVulkanDevices
+	currentVulkanDriver = func() string {
+		waylandVulkan.Lock()
+		defer waylandVulkan.Unlock()
+		if cur := waylandVulkan.current; cur != nil {
+			return cur.driver
+		}
+		return ""
+	}
 }
 
 // acquireWaylandVulkan returns the instance for a window to draw with,
-// held for it until releaseWaylandVulkan: the current one if it was made
-// with the device chosen, else a new one. A new one is made with the
-// chosen device's driver alone, if there is one and it loads, so that no
-// other GPU wakes up; with every driver otherwise.
-func acquireWaylandVulkan() (*sharedVulkan, error) {
+// held for it until releaseWaylandVulkan, and what the window wants of it:
+// the current one if it was made as windows want it now, or with the
+// driver alone of the device they want, else a new one. A new one is made
+// with a driver alone, the chosen device's or the compositor's, if it
+// loads, so that no other GPU wakes up; with every driver otherwise.
+func acquireWaylandVulkan() (*sharedVulkan, vulkanWant, error) {
 	waylandVulkan.Lock()
 	defer waylandVulkan.Unlock()
-	device := wantedWaylandVulkan()
-	if cur := waylandVulkan.current; cur != nil && sameVulkanDevice(cur.device, device) {
+	want := wantedWaylandVulkan()
+	if cur := waylandVulkan.current; cur != nil && cur.serves(want) {
 		cur.windows++
-		return cur, nil
+		return cur, want, nil
 	}
-	inst, err := makeWaylandVulkan(device)
+	inst, driver, err := makeWaylandVulkan(want)
 	if err != nil {
-		return nil, err
+		return nil, want, err
 	}
 	if old := waylandVulkan.current; old != nil && old.windows == 0 {
 		destroyWaylandVulkan(old.inst)
 	}
-	waylandVulkan.current = &sharedVulkan{inst: inst, device: device, windows: 1}
-	return waylandVulkan.current, nil
+	waylandVulkan.current = &sharedVulkan{inst: inst, want: want, driver: driver, windows: 1}
+	return waylandVulkan.current, want, nil
 }
 
-// wantedWaylandVulkan is the device chosen, or none if a window could not
-// draw with it. The caller holds waylandVulkan's lock.
-func wantedWaylandVulkan() VulkanDevice {
+// serves reports whether windows that want want can draw with s: it was
+// made so, or with the driver of the device wanted alone. The second is
+// the compositor's driver, which a program remembers for the device it
+// drew with: the windows that have the instance keep it.
+func (s *sharedVulkan) serves(want vulkanWant) bool {
+	return s.want.same(want) || want.alone && s.driver != "" && s.driver == want.device.Driver
+}
+
+// wantedWaylandVulkan is the device chosen with its driver alone; the
+// compositor's driver alone where none is chosen; every driver where a
+// window could not draw so. The caller holds waylandVulkan's lock.
+func wantedWaylandVulkan() vulkanWant {
 	device := CurrentGraphics().Vulkan
 	if f := waylandVulkan.failed; f != nil && sameVulkanDevice(*f, device) {
-		return VulkanDevice{}
+		return vulkanWant{}
 	}
-	return device
+	if sameVulkanDevice(device, VulkanDevice{}) {
+		return vulkanWant{alone: !waylandVulkan.compositorFailed}
+	}
+	return vulkanWant{device: device, alone: true}
 }
 
-// failWaylandVulkan tells that a window could not draw with device.
-func failWaylandVulkan(device VulkanDevice) {
+// failWaylandVulkan tells that a window could not draw with the driver
+// loaded alone as want wanted.
+func failWaylandVulkan(want vulkanWant) {
 	waylandVulkan.Lock()
 	defer waylandVulkan.Unlock()
-	waylandVulkan.failed = &device
+	if sameVulkanDevice(want.device, VulkanDevice{}) {
+		waylandVulkan.compositorFailed = true
+		return
+	}
+	waylandVulkan.failed = &want.device
 }
 
 // releaseWaylandVulkan lets a window's hold of s go, destroying it with
@@ -151,19 +204,108 @@ var (
 	destroyWaylandVulkan = vk.DestroyInstance
 )
 
-func newWaylandVulkanInstance(device VulkanDevice) (vk.Instance, error) {
-	if device.Driver != "" {
-		for _, d := range vk.Drivers() {
-			if d.Manifest != device.Driver {
+// newWaylandVulkanInstance makes an instance as want wants it, and tells
+// the manifest of the driver it was made with alone. Of the compositor's
+// drivers, the first that loads and has a device that does not draw on
+// the CPU is taken.
+func newWaylandVulkanInstance(want vulkanWant) (vk.Instance, string, error) {
+	if want.alone {
+		var drivers []vk.Driver
+		compositor := sameVulkanDevice(want.device, VulkanDevice{})
+		if compositor {
+			drivers = compositorVulkanDrivers(drmKernelDriver(waylandMainDevice.Load()), vk.Drivers(), runtime.GOARCH)
+		} else if i := slices.IndexFunc(vk.Drivers(), func(d vk.Driver) bool { return d.Manifest == want.device.Driver }); i >= 0 {
+			drivers = []vk.Driver{vk.Drivers()[i]}
+		}
+		for _, d := range drivers {
+			inst, err := vk.CreateInstanceFor(d, waylandVulkanExtensions...)
+			if err != nil {
 				continue
 			}
-			if inst, err := vk.CreateInstanceFor(d, waylandVulkanExtensions...); err == nil {
-				return inst, nil
+			if !compositor || hasGPU(inst) {
+				return inst, d.Manifest, nil
 			}
-			break
+			vk.DestroyInstance(inst)
 		}
 	}
-	return vk.CreateInstance(waylandVulkanExtensions...)
+	inst, err := vk.CreateInstance(waylandVulkanExtensions...)
+	return inst, "", err
+}
+
+// hasGPU reports whether inst has a device that does not draw on the CPU.
+func hasGPU(inst vk.Instance) bool {
+	infos, err := vk.PhysicalDevices(inst)
+	return err == nil && slices.ContainsFunc(infos, func(i vk.PhysicalDeviceInfo) bool { return i.Type != vk.PhysicalDeviceCPU })
+}
+
+// drmKernelDriver is the name of the kernel's driver of the DRM device
+// dev, a dev_t, from sysfs: i915, amdgpu, nvidia. Empty where it is not
+// known.
+func drmKernelDriver(dev uint64) string {
+	if dev == 0 {
+		return ""
+	}
+	link, err := os.Readlink(fmt.Sprintf("/sys/dev/char/%d:%d/device/driver", unix.Major(dev), unix.Minor(dev)))
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(link)
+}
+
+// vulkanManifests are the names Mesa's and the vendors' Vulkan drivers
+// give their manifests, before the architecture, by the kernel's driver of
+// the devices they draw with.
+var vulkanManifests = map[string][]string{
+	"i915":       {"intel_icd", "intel_hasvk_icd"},
+	"xe":         {"intel_icd"},
+	"amdgpu":     {"radeon_icd", "amd_icd64", "amd_icd"},
+	"radeon":     {"radeon_icd"},
+	"nouveau":    {"nouveau_icd"},
+	"nvidia":     {"nvidia_icd"},
+	"virtio_gpu": {"virtio_icd"},
+	"msm":        {"freedreno_icd"},
+	"panfrost":   {"panfrost_icd"},
+	"panthor":    {"panfrost_icd"},
+	"v3d":        {"broadcom_icd"},
+	"asahi":      {"asahi_icd"},
+}
+
+// vulkanArch is how manifests name the architecture of their library.
+var vulkanArch = map[string]string{
+	"amd64":   "x86_64",
+	"386":     "i686",
+	"arm64":   "aarch64",
+	"arm":     "armv7",
+	"riscv64": "riscv64",
+	"ppc64le": "powerpc64le",
+	"loong64": "loongarch64",
+}
+
+// compositorVulkanDrivers lists the Vulkan drivers that may draw with the
+// device whose kernel driver is kernel, in the order to try them: those of
+// goarch first, as manifests of the other architectures fail to load.
+func compositorVulkanDrivers(kernel string, drivers []vk.Driver, goarch string) []vk.Driver {
+	var found []vk.Driver
+	for _, name := range vulkanManifests[kernel] {
+		for _, d := range drivers {
+			if d.Manifest == name+".json" || strings.HasPrefix(d.Manifest, name+".") {
+				found = append(found, d)
+			}
+		}
+	}
+	if arch := vulkanArch[goarch]; arch != "" {
+		slices.SortStableFunc(found, func(a, b vk.Driver) int {
+			return boolInt(!strings.Contains(a.Manifest, arch)) - boolInt(!strings.Contains(b.Manifest, arch))
+		})
+	}
+	return found
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // waylandVulkanDevices lists the devices of each driver, with the driver

@@ -7,6 +7,8 @@
 #include "wayland_xdg_decoration.h"
 #include "wayland_text_input.h"
 #include "wayland_background_effect.h"
+#include "wayland_linux_dmabuf.h"
+#include <unistd.h>
 #include "_cgo_export.h"
 
 const struct wl_registry_listener gio_registry_listener = {
@@ -17,6 +19,31 @@ const struct wl_registry_listener gio_registry_listener = {
 
 const struct ext_background_effect_manager_v1_listener gio_background_effect_manager_listener = {
 	.capabilities = gio_onBackgroundEffectCapabilities,
+};
+
+// Of the feedback of linux-dmabuf only the main device is wanted: the
+// device the compositor draws with.
+static void gio_onDmabufFeedbackDone(void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback) {
+}
+
+static void gio_onDmabufFeedbackFormatTable(void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback, int32_t fd, uint32_t size) {
+	close(fd);
+}
+
+static void gio_onDmabufFeedbackArray(void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback, struct wl_array *array) {
+}
+
+static void gio_onDmabufFeedbackFlags(void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback, uint32_t flags) {
+}
+
+const struct zwp_linux_dmabuf_feedback_v1_listener gio_dmabuf_feedback_listener = {
+	.done = gio_onDmabufFeedbackDone,
+	.format_table = gio_onDmabufFeedbackFormatTable,
+	.main_device = gio_onDmabufFeedbackMainDevice,
+	.tranche_done = gio_onDmabufFeedbackDone,
+	.tranche_target_device = gio_onDmabufFeedbackArray,
+	.tranche_formats = gio_onDmabufFeedbackArray,
+	.tranche_flags = gio_onDmabufFeedbackFlags,
 };
 
 const struct wl_surface_listener gio_surface_listener = {

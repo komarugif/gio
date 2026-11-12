@@ -6,6 +6,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -63,6 +64,10 @@ import (
 //go:generate wayland-scanner private-code /usr/share/wayland-protocols/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml wayland_xdg_toplevel_icon.c
 //go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_xdg_toplevel_icon.c
 
+//go:generate wayland-scanner client-header /usr/share/wayland-protocols/stable/linux-dmabuf/linux-dmabuf-v1.xml wayland_linux_dmabuf.h
+//go:generate wayland-scanner private-code /usr/share/wayland-protocols/stable/linux-dmabuf/linux-dmabuf-v1.xml wayland_linux_dmabuf.c
+//go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_linux_dmabuf.c
+
 /*
 #cgo linux pkg-config: wayland-client wayland-cursor
 #cgo freebsd openbsd LDFLAGS: -lwayland-client -lwayland-cursor
@@ -77,10 +82,12 @@ import (
 #include "wayland_xdg_decoration.h"
 #include "wayland_xdg_activation.h"
 #include "wayland_xdg_toplevel_icon.h"
+#include "wayland_linux_dmabuf.h"
 #include "wayland_background_effect.h"
 
 extern const struct wl_registry_listener gio_registry_listener;
 extern const struct ext_background_effect_manager_v1_listener gio_background_effect_manager_listener;
+extern const struct zwp_linux_dmabuf_feedback_v1_listener gio_dmabuf_feedback_listener;
 extern const struct wl_surface_listener gio_surface_listener;
 extern const struct xdg_surface_listener gio_xdg_surface_listener;
 extern const struct xdg_toplevel_listener gio_xdg_toplevel_listener;
@@ -120,6 +127,10 @@ type wlDisplay struct {
 	// icons sets the icons of windows.
 	icons      *C.struct_xdg_toplevel_icon_manager_v1
 	effectCaps C.uint32_t
+	// dmabuf and dmabufFeedback ask for the device the compositor draws
+	// with, while the display is made.
+	dmabuf         *C.struct_zwp_linux_dmabuf_v1
+	dmabufFeedback *C.struct_zwp_linux_dmabuf_feedback_v1
 
 	// Notification pipe fds.
 	notify struct {
@@ -808,6 +819,15 @@ func gio_onRegistryGlobal(data unsafe.Pointer, reg *C.struct_wl_registry, name C
 		d.activation = (*C.struct_xdg_activation_v1)(C.wl_registry_bind(reg, name, &C.xdg_activation_v1_interface, 1))
 	case "xdg_toplevel_icon_manager_v1":
 		d.icons = (*C.struct_xdg_toplevel_icon_manager_v1)(C.wl_registry_bind(reg, name, &C.xdg_toplevel_icon_manager_v1_interface, 1))
+	case "zwp_linux_dmabuf_v1":
+		// Version 4 tells the device the compositor draws with, for
+		// Vulkan to load its driver alone (waylandMainDevice).
+		if version < 4 {
+			break
+		}
+		d.dmabuf = (*C.struct_zwp_linux_dmabuf_v1)(C.wl_registry_bind(reg, name, &C.zwp_linux_dmabuf_v1_interface, 4))
+		d.dmabufFeedback = C.zwp_linux_dmabuf_v1_get_default_feedback(d.dmabuf)
+		C.zwp_linux_dmabuf_feedback_v1_add_listener(d.dmabufFeedback, &C.gio_dmabuf_feedback_listener, nil)
 	case "ext_background_effect_manager_v1":
 		d.effects = (*C.struct_ext_background_effect_manager_v1)(C.wl_registry_bind(reg, name, &C.ext_background_effect_manager_v1_interface, 1))
 		C.ext_background_effect_manager_v1_add_listener(d.effects, &C.gio_background_effect_manager_listener, unsafe.Pointer(d.disp))
@@ -2174,9 +2194,36 @@ func newWLDisplay() (*wlDisplay, error) {
 	C.wl_display_roundtrip(d.disp)
 	// Configuration listeners are added to outputs by gio_onRegistryGlobal.
 	// We need another roundtrip to get the initial output configurations
-	// through the gio_onOutput* callbacks.
+	// through the gio_onOutput* callbacks, and the main device of
+	// linux-dmabuf's feedback.
 	C.wl_display_roundtrip(d.disp)
+	d.destroyDmabuf()
 	return d, nil
+}
+
+// waylandMainDevice is the dev_t of the device the compositor draws with,
+// as linux-dmabuf's feedback told it last; zero if none did.
+var waylandMainDevice atomic.Uint64
+
+//export gio_onDmabufFeedbackMainDevice
+func gio_onDmabufFeedbackMainDevice(data unsafe.Pointer, feedback *C.struct_zwp_linux_dmabuf_feedback_v1, dev *C.struct_wl_array) {
+	if dev.size != 8 || dev.data == nil {
+		return
+	}
+	waylandMainDevice.Store(binary.NativeEndian.Uint64(unsafe.Slice((*byte)(dev.data), 8)))
+}
+
+// destroyDmabuf lets linux-dmabuf go once its feedback has been told:
+// nothing else of it is used.
+func (d *wlDisplay) destroyDmabuf() {
+	if d.dmabufFeedback != nil {
+		C.zwp_linux_dmabuf_feedback_v1_destroy(d.dmabufFeedback)
+		d.dmabufFeedback = nil
+	}
+	if d.dmabuf != nil {
+		C.zwp_linux_dmabuf_v1_destroy(d.dmabuf)
+		d.dmabuf = nil
+	}
 }
 
 func (d *wlDisplay) destroy() {
@@ -2204,6 +2251,7 @@ func (d *wlDisplay) destroy() {
 	if d.imm != nil {
 		C.zwp_text_input_manager_v3_destroy(d.imm)
 	}
+	d.destroyDmabuf()
 	if d.effects != nil {
 		C.ext_background_effect_manager_v1_destroy(d.effects)
 	}
