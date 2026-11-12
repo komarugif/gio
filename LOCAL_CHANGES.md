@@ -688,8 +688,10 @@ Run the focused check from the project root:
   - `TestPathKeptOverFrames` draws a path of kept ops beside new ones,
     first in the frame the buffer shrinks in after a large first frame.
 - `gpu.Device`, `app.GPUInfo` (`gpu/internal/driver.Caps.API`, `Device`,
-  `Driver`): the graphics API, the device and the driver windows are drawn
-  with, as the API names them: OpenGL's `GL_VERSION` (parted into the API
+  `Driver`, `VendorID`, `DeviceID`): the graphics API, the device and the
+  driver windows are drawn with, with the device's PCI ids where the API
+  tells them (Vulkan, Direct3D 11), for a program to know which device
+  drew, as the API names them: OpenGL's `GL_VERSION` (parted into the API
   and what the driver adds) and `GL_RENDERER`, Direct3D 11's adapter with
   its vendor's and device's ids and its driver's version
   (`CheckInterfaceSupport` for `IDXGIDevice`, as Chromium asks it), Vulkan's
@@ -746,7 +748,13 @@ Run the focused check from the project root:
     is loaded, with a driver alone it is not. The structures
     are declared for headers older than the extension.
     `vk.ChoosePreferredPhysicalDevice` takes the device of the chosen ids
-    where it can draw, the first that can otherwise. `TestDriversIn`,
+    where it can draw, the first that can otherwise. Where a window cannot
+    draw with an instance made for a device (its driver alone has no
+    device that can draw a window), the device is marked failed and the
+    window is made with every driver, as are the windows after it until
+    another device is chosen (`TestWaylandVulkanFailedDevice`): the
+    messenger chooses the device the automatic choice drew with before,
+    which may be gone. `TestDriversIn`,
     `TestCreateInstanceFor` (each driver alone has the devices of all
     together), `TestCreateInstanceForWithoutTheLoaders` (with the loader
     finding no manifest, a driver loaded alone still has its devices).

@@ -1636,16 +1636,16 @@ func IsSoftware(dev *Device) bool {
 
 // DeviceName names the adapter of dev with its vendor's and device's ids,
 // and the version of its driver, if the adapter tells it.
-func DeviceName(dev *Device) (name, driver string) {
+func DeviceName(dev *Device) (name, driver string, vendorID, deviceID uint32) {
 	desc, version, err := adapterDesc(dev)
 	if err != nil {
-		return "", ""
+		return "", "", 0, 0
 	}
 	name = fmt.Sprintf("%s (%04x:%04x)", windows.UTF16ToString(desc.Description[:]), desc.VendorId, desc.DeviceId)
 	if version != 0 {
 		driver = fmt.Sprintf("%d.%d.%d.%d", version>>48, version>>32&0xffff, version>>16&0xffff, version&0xffff)
 	}
-	return name, driver
+	return name, driver, desc.VendorId, desc.DeviceId
 }
 
 // adapterDesc describes the adapter of dev, with the version of its user

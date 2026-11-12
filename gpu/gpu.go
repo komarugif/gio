@@ -384,9 +384,11 @@ func Software(g GPU) bool {
 }
 
 // DeviceInfo is what a GPU's API tells of it: the API with its version,
-// the device and its driver. Empty fields are what the API does not tell.
+// the device and its driver, and the device's PCI ids where the API tells
+// them (Vulkan, Direct3D 11). Zero fields are what the API does not tell.
 type DeviceInfo struct {
 	API, Device, Driver string
+	VendorID, DeviceID  uint32
 }
 
 // String puts the fields that are known together, the device first.
@@ -404,7 +406,7 @@ func (d DeviceInfo) String() string {
 func Device(g GPU) DeviceInfo {
 	if gg, ok := g.(*gpu); ok {
 		c := gg.ctx.Caps()
-		return DeviceInfo{API: c.API, Device: c.Device, Driver: c.Driver}
+		return DeviceInfo{API: c.API, Device: c.Device, Driver: c.Driver, VendorID: c.VendorID, DeviceID: c.DeviceID}
 	}
 	return DeviceInfo{}
 }

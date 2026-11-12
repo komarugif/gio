@@ -255,6 +255,8 @@ func (b *Backend) Caps() driver.Caps {
 		API:            b.device.API(),
 		Device:         b.device.Device(),
 		Driver:         b.device.Driver(),
+		VendorID:       b.device.VendorID,
+		DeviceID:       b.device.DeviceID,
 	}
 }
 

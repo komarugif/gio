@@ -38,6 +38,9 @@ type sharedVulkan struct {
 var waylandVulkan struct {
 	sync.Mutex
 	current *sharedVulkan
+	// failed is a device a window could not draw with: windows draw with
+	// any device instead, of every driver, until another is chosen.
+	failed *VulkanDevice
 }
 
 // sameVulkanDevice reports whether a and b are the same device of the same
@@ -66,6 +69,12 @@ func init() {
 		if err != nil {
 			vk.DestroySurface(inst, surf)
 			releaseWaylandVulkan(shared)
+			if shared.device != (VulkanDevice{}) {
+				// The device chosen, or its driver alone, cannot draw the
+				// window: any device of every driver may.
+				failWaylandVulkan(shared.device)
+				return newWaylandVulkanContext(w)
+			}
 			return nil, err
 		}
 		c := &wlVkContext{
@@ -88,7 +97,7 @@ func init() {
 func acquireWaylandVulkan() (*sharedVulkan, error) {
 	waylandVulkan.Lock()
 	defer waylandVulkan.Unlock()
-	device := CurrentGraphics().Vulkan
+	device := wantedWaylandVulkan()
 	if cur := waylandVulkan.current; cur != nil && sameVulkanDevice(cur.device, device) {
 		cur.windows++
 		return cur, nil
@@ -102,6 +111,23 @@ func acquireWaylandVulkan() (*sharedVulkan, error) {
 	}
 	waylandVulkan.current = &sharedVulkan{inst: inst, device: device, windows: 1}
 	return waylandVulkan.current, nil
+}
+
+// wantedWaylandVulkan is the device chosen, or none if a window could not
+// draw with it. The caller holds waylandVulkan's lock.
+func wantedWaylandVulkan() VulkanDevice {
+	device := CurrentGraphics().Vulkan
+	if f := waylandVulkan.failed; f != nil && sameVulkanDevice(*f, device) {
+		return VulkanDevice{}
+	}
+	return device
+}
+
+// failWaylandVulkan tells that a window could not draw with device.
+func failWaylandVulkan(device VulkanDevice) {
+	waylandVulkan.Lock()
+	defer waylandVulkan.Unlock()
+	waylandVulkan.failed = &device
 }
 
 // releaseWaylandVulkan lets a window's hold of s go, destroying it with

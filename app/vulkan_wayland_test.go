@@ -118,3 +118,43 @@ func TestWaylandVulkanInstances(t *testing.T) {
 	}
 	releaseWaylandVulkan(e)
 }
+
+// A device a window could not draw with gives way to every driver, until
+// another device is chosen.
+func TestWaylandVulkanFailedDevice(t *testing.T) {
+	defer SetGraphics(Graphics{})
+	defer func(m func(VulkanDevice) (vk.Instance, error), d func(vk.Instance)) {
+		makeWaylandVulkan, destroyWaylandVulkan = m, d
+		waylandVulkan.current, waylandVulkan.failed = nil, nil
+	}(makeWaylandVulkan, destroyWaylandVulkan)
+	waylandVulkan.current, waylandVulkan.failed = nil, nil
+	var fakes []*byte
+	var made []VulkanDevice
+	makeWaylandVulkan = func(d VulkanDevice) (vk.Instance, error) {
+		fakes = append(fakes, new(byte))
+		made = append(made, d)
+		return vk.Instance(unsafe.Pointer(fakes[len(fakes)-1])), nil
+	}
+	destroyWaylandVulkan = func(vk.Instance) {}
+	intel := VulkanDevice{Driver: "intel_icd.x86_64.json", VendorID: 0x8086, DeviceID: 0x4626}
+	nvidia := VulkanDevice{Driver: "nvidia_icd.json", VendorID: 0x10de, DeviceID: 0x25a2}
+
+	SetGraphics(Graphics{Vulkan: intel})
+	s, _ := acquireWaylandVulkan()
+	releaseWaylandVulkan(s)
+	failWaylandVulkan(intel)
+	s, _ = acquireWaylandVulkan()
+	if s.device != (VulkanDevice{}) {
+		t.Fatalf("after %+v failed, drew with %+v", intel, s.device)
+	}
+	releaseWaylandVulkan(s)
+	SetGraphics(Graphics{Vulkan: nvidia})
+	s, _ = acquireWaylandVulkan()
+	if s.device != nvidia {
+		t.Fatalf("another device chosen, drew with %+v", s.device)
+	}
+	releaseWaylandVulkan(s)
+	if len(made) != 3 || made[1] != (VulkanDevice{}) {
+		t.Fatalf("instances made with %+v", made)
+	}
+}

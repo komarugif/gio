@@ -118,6 +118,9 @@ type Caps struct {
 	// API names the graphics API and its version, Device the device and
 	// Driver its driver, as the API tells them; empty where it does not.
 	API, Device, Driver string
+	// VendorID and DeviceID are the device's PCI ids, where the API tells
+	// them (Vulkan, Direct3D 11).
+	VendorID, DeviceID uint32
 }
 
 type VertexShader interface {

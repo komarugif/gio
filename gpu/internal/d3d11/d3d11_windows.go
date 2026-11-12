@@ -136,7 +136,7 @@ func newDirect3D11Device(api driver.Direct3D11) (driver.Device, error) {
 	}
 	b.caps.Software = d3d11.IsSoftware(dev)
 	b.caps.API = "Direct3D 11"
-	b.caps.Device, b.caps.Driver = d3d11.DeviceName(dev)
+	b.caps.Device, b.caps.Driver, b.caps.VendorID, b.caps.DeviceID = d3d11.DeviceName(dev)
 	if fmt, ok := detectFloatFormat(dev); ok {
 		b.floatFormat = fmt
 		b.caps.Features |= driver.FeatureFloatRenderTargets

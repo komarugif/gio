@@ -5,6 +5,7 @@ package headless
 import (
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 
 	"gioui.org/gpu"
@@ -160,6 +161,9 @@ func TestDevice(t *testing.T) {
 	d := gpu.Device(w.gpu)
 	if d.API == "" || d.Device == "" || d.Driver == "" {
 		t.Fatalf("%#v", d)
+	}
+	if strings.HasPrefix(d.API, "Vulkan") && d.VendorID == 0 {
+		t.Fatalf("Vulkan without the device's ids: %#v", d)
 	}
 	t.Log(d)
 }
