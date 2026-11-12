@@ -6,9 +6,11 @@ package vk
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -123,5 +125,78 @@ func TestCreateInstanceForWithoutTheLoaders(t *testing.T) {
 	defer DestroyInstance(inst)
 	if devs, err := PhysicalDevices(inst); err != nil || len(devs) == 0 {
 		t.Fatalf("%s alone: %d devices, %v", driver.Manifest, len(devs), err)
+	}
+}
+
+// otherDriverLibrary is a library of the system that a manifest of another
+// driver names in TestCreateInstanceForLoadsNoOtherDriver: the loader loads
+// it, and gives it up, when it loads that driver.
+const otherDriverLibrary = "/usr/lib/libbz2.so.1"
+
+// A driver loaded alone loads no other driver, not even to ask the loader
+// what it has: a discrete GPU's driver wakes the GPU up when loaded. The
+// test runs itself with another driver's manifest and LD_DEBUG telling the
+// libraries loaded; with every driver, the other's library is loaded.
+func TestCreateInstanceForLoadsNoOtherDriver(t *testing.T) {
+	switch os.Getenv("GIO_VK_TEST_CHILD") {
+	case "all":
+		if inst, err := CreateInstance(); err == nil {
+			DestroyInstance(inst)
+		}
+		return
+	case "alone":
+		for _, d := range Drivers() {
+			if d.Library == otherDriverLibrary {
+				continue
+			}
+			if _, err := driverEntry(d.Library); err != nil {
+				continue
+			}
+			inst, err := CreateInstanceFor(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			DestroyInstance(inst)
+			return
+		}
+		t.Skip("no driver loads")
+	}
+	if _, err := os.Stat(otherDriverLibrary); err != nil {
+		t.Skip(err)
+	}
+	if err := vkInit(); err != nil {
+		t.Skip(err)
+	}
+	data := t.TempDir()
+	dir := filepath.Join(data, "vulkan", "icd.d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"file_format_version": "1.0.0", "ICD": {"library_path": "` + otherDriverLibrary + `", "api_version": "1.4.0"}}`
+	if err := os.WriteFile(filepath.Join(dir, "zz_other_icd.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loads := func(mode string) bool {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCreateInstanceForLoadsNoOtherDriver$", "-test.v")
+		cmd.Env = append(os.Environ(), "GIO_VK_TEST_CHILD="+mode, "XDG_DATA_HOME="+data, "LD_DEBUG=files")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", mode, err, out)
+		}
+		if strings.Contains(string(out), "SKIP") {
+			t.Skipf("%s: skipped", mode)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, "file="+otherDriverLibrary) && strings.Contains(line, "dynamically loaded") {
+				return true
+			}
+		}
+		return false
+	}
+	if !loads("all") {
+		t.Skip("the loader does not load the other driver with every driver: nothing to tell apart")
+	}
+	if loads("alone") {
+		t.Errorf("a driver loaded alone loaded %s too", otherDriverLibrary)
 	}
 }

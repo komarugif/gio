@@ -734,8 +734,14 @@ Run the focused check from the project root:
     other driver loads and no other GPU wakes. Setting
     `VK_LOADER_DRIVERS_SELECT` in the process would do it too, but
     `setenv` races with C code reading the environment in other threads.
-    The extension needs Vulkan-Loader 1.3.238; without it, or where the
-    driver does not load, every driver is loaded as before. The structures
+    The extension needs Vulkan-Loader 1.3.238; without it
+    (`VK_ERROR_EXTENSION_NOT_PRESENT`), or where the driver does not load,
+    every driver is loaded as before. The loader is not asked for its
+    extensions first: to tell them, it loads every driver, and on the
+    laptop NVIDIA woke up still with Intel chosen.
+    `TestCreateInstanceForLoadsNoOtherDriver` runs itself with another
+    driver's manifest and `LD_DEBUG=files`: with every driver its library
+    is loaded, with a driver alone it is not. The structures
     are declared for headers older than the extension.
     `vk.ChoosePreferredPhysicalDevice` takes the device of the chosen ids
     where it can draw, the first that can otherwise. `TestDriversIn`,

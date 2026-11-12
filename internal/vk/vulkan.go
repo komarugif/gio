@@ -892,13 +892,12 @@ const directDriverLoading = "VK_LUNARG_direct_driver_loading"
 // CreateInstanceFor is CreateInstance with driver alone: the loader loads
 // no other driver, and wakes no other GPU up, as a discrete one asleep in a
 // laptop takes seconds to. It fails where the loader lacks
-// VK_LUNARG_direct_driver_loading or the driver's library does not load.
+// VK_LUNARG_direct_driver_loading (VK_ERROR_EXTENSION_NOT_PRESENT) or the
+// driver's library does not load. It does not ask the loader for its
+// extensions first: to tell them, the loader loads every driver.
 func CreateInstanceFor(driver Driver, exts ...string) (Instance, error) {
 	if err := vkInit(); err != nil {
 		return nil, err
-	}
-	if !instanceExtension(directDriverLoading) {
-		return nil, fmt.Errorf("vulkan: the loader lacks %s", directDriverLoading)
 	}
 	gipa, err := driverEntry(driver.Library)
 	if err != nil {
@@ -936,7 +935,7 @@ func driverEntry(lib string) (unsafe.Pointer, error) {
 }
 
 // instanceExtension reports whether the loader or a layer has the instance
-// extension name.
+// extension name. The loader loads every driver to tell it.
 func instanceExtension(name string) bool {
 	f := funcs.vkEnumerateInstanceExtensionProperties
 	if f == nil {
