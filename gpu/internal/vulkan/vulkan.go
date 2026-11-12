@@ -52,6 +52,14 @@ type Backend struct {
 	bindings []vk.Buffer
 	offsets  []vk.DeviceSize
 
+	// bound is what the current command buffer has bound, for binds of
+	// the same to be left out: the gpu package binds the pipeline, the
+	// vertex buffer and the viewport anew for each draw, and each call to
+	// C costs. A command buffer begins with nothing bound; what is bound
+	// stays across render passes and, but for descriptor sets, across
+	// pipelines.
+	bound boundState
+
 	desc struct {
 		dirty    bool
 		texBinds [texUnits]*Texture
@@ -105,6 +113,16 @@ const (
 	freeImageFrames = 3
 	maxFreeImages   = 16
 )
+
+type boundState struct {
+	pipe *Pipeline
+	// set is the descriptor set bound for pipe.
+	set      vk.DescriptorSet
+	vertBuf  vk.Buffer
+	vertOff  int
+	vertN    int
+	viewport image.Rectangle
+}
 
 type passKey struct {
 	fmt         vk.Format
@@ -160,6 +178,15 @@ type descPool struct {
 	texBinds   []int
 	imgBinds   []int
 	bufBinds   []int
+	// written are the sets written this frame, by what they were written
+	// with: a draw with the textures and buffers of one before takes its
+	// set instead of writing another.
+	written map[descKey]vk.DescriptorSet
+}
+
+type descKey struct {
+	tex [texUnits]*Texture
+	buf [storageUnits]*Buffer
 }
 
 type Buffer struct {
@@ -323,6 +350,7 @@ func (b *Backend) resetPipes() {
 		}
 		if p.desc.size > 0 {
 			p.desc.size = 0
+			clear(p.desc.written)
 		}
 	}
 }
@@ -720,6 +748,11 @@ func (b *Backend) CopyTexture(dstTex driver.Texture, dorig image.Point, srcFBO d
 }
 
 func (b *Backend) Viewport(x, y, width, height int) {
+	vp := image.Rect(x, y, x+width, y+height)
+	if b.bound.viewport == vp {
+		return
+	}
+	b.bound.viewport = vp
 	cmdBuf := b.currentCmdBuf()
 	vk.CmdSetViewport(cmdBuf, vk.BuildViewport(float32(x), float32(y), float32(width), float32(height)))
 }
@@ -785,38 +818,10 @@ func (t *Texture) Upload(offset, size image.Point, pixels []byte, stride int) {
 		vk.ACCESS_TRANSFER_WRITE_BIT,
 	)
 	vk.CmdCopyBufferToImage(cmdBuf, stage.buf, t.img, t.layout, op)
-	// Build mipmaps by repeating linear blits.
-	w, h := t.width, t.height
-	for i := 1; i < t.mipmaps; i++ {
-		nw, nh := w/2, h/2
-		if nh < 1 {
-			nh = 1
-		}
-		if nw < 1 {
-			nw = 1
-		}
-		// Transition previous (source) level.
-		b := vk.BuildImageMemoryBarrier(
-			t.img,
-			vk.ACCESS_TRANSFER_WRITE_BIT, vk.ACCESS_TRANSFER_READ_BIT,
-			vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			i-1, 1,
-		)
-		vk.CmdImageBarrier(cmdBuf, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.DEPENDENCY_BY_REGION_BIT, b)
-		// Blit to this mipmap level.
-		blit := vk.BuildImageBlit(0, 0, 0, 0, w, h, nw, nh, i-1, i)
-		vk.CmdBlitImage(cmdBuf, t.img, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.img, vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit, vk.FILTER_LINEAR)
-		w, h = nw, nh
-	}
 	if t.mipmaps > 1 {
-		// Add barrier for last blit.
-		b := vk.BuildImageMemoryBarrier(
-			t.img,
-			vk.ACCESS_TRANSFER_WRITE_BIT, vk.ACCESS_TRANSFER_READ_BIT,
-			vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			t.mipmaps-1, 1,
-		)
-		vk.CmdImageBarrier(cmdBuf, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.DEPENDENCY_BY_REGION_BIT, b)
+		// Build mipmaps by repeating linear blits, in C: a barrier and a
+		// blit for each level.
+		vk.CmdGenerateMipmaps(cmdBuf, t.img, t.width, t.height, t.mipmaps)
 		t.layout = vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
 	}
 }
@@ -890,9 +895,35 @@ func (p *descPool) bindDescriptorSet(b *Backend, cmdBuf vk.CommandBuffer, bindPo
 		}
 		p.sets = sets
 		p.size = 0
+		// The sets written are the old pool's, destroyed with it.
+		clear(p.written)
+	}
+	// The key is of the bindings the pipeline reads: the others keep what
+	// draws of other pipelines bound.
+	var key descKey
+	for _, bind := range p.texBinds {
+		key.tex[bind] = texBinds[bind]
+	}
+	for _, bind := range p.imgBinds {
+		key.tex[bind] = texBinds[bind]
+	}
+	for _, bind := range p.bufBinds {
+		key.buf[bind] = bufBinds[bind]
+	}
+	if set, ok := p.written[key]; ok {
+		if b.bound.set != set {
+			b.bound.set = set
+			vk.CmdBindDescriptorSet(cmdBuf, bindPoint, p.layout, 0, set)
+		}
+		return
 	}
 	descSet := p.sets[p.size]
 	p.size++
+	if p.written == nil {
+		p.written = make(map[descKey]vk.DescriptorSet)
+	}
+	p.written[key] = descSet
+	b.bound.set = descSet
 	for _, bind := range p.texBinds {
 		tex := texBinds[bind]
 		vk.UpdateDescriptorSetImage(b.dev, descSet, bind, vk.DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex.sampler, tex.view, vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
@@ -942,6 +973,9 @@ func (b *Backend) PrepareTexture(tex driver.Texture) {
 
 func (b *Backend) BindTexture(unit int, tex driver.Texture) {
 	t := tex.(*Texture)
+	if b.desc.texBinds[unit] == t {
+		return
+	}
 	b.desc.texBinds[unit] = t
 	b.desc.dirty = true
 }
@@ -955,8 +989,14 @@ func (b *Backend) BindProgram(prog driver.Program) {
 }
 
 func (b *Backend) bindPipeline(p *Pipeline, point vk.PipelineBindPoint) {
+	if b.bound.pipe == p {
+		// Bound, with its descriptor set.
+		return
+	}
 	b.pipe = p
 	b.desc.dirty = p.desc.descLayout != 0
+	b.bound.pipe = p
+	b.bound.set = 0
 	cmdBuf := b.currentCmdBuf()
 	vk.CmdBindPipeline(cmdBuf, point, p.pipe)
 }
@@ -979,14 +1019,15 @@ func (b *Backend) BindStorageBuffer(binding int, buffer driver.Buffer) {
 func (b *Backend) BindUniforms(buffer driver.Buffer) {
 	buf := buffer.(*Buffer)
 	cmdBuf := b.currentCmdBuf()
-	for _, s := range b.pipe.pushRanges {
-		off := vk.PushConstantRangeOffset(s)
-		vk.CmdPushConstants(cmdBuf, b.pipe.desc.layout, vk.PushConstantRangeStageFlags(s), off, buf.store[off:off+vk.PushConstantRangeSize(s)])
-	}
+	vk.CmdPushConstantRanges(cmdBuf, b.pipe.desc.layout, b.pipe.pushRanges, buf.store)
 }
 
 func (b *Backend) BindVertexBuffer(buffer driver.Buffer, offset int) {
 	buf := buffer.(*Buffer)
+	if b.bound.vertBuf == buf.buf && b.bound.vertOff == offset && b.bound.vertN == b.pipe.ninputs {
+		return
+	}
+	b.bound.vertBuf, b.bound.vertOff, b.bound.vertN = buf.buf, offset, b.pipe.ninputs
 	cmdBuf := b.currentCmdBuf()
 	b.bindings = b.bindings[:0]
 	b.offsets = b.offsets[:0]
@@ -1147,6 +1188,7 @@ func (b *Backend) ensureCmdBuf() vk.CommandBuffer {
 	if err := vk.BeginCommandBuffer(buf); err != nil {
 		panic(err)
 	}
+	b.bound = boundState{}
 	return buf
 }
 

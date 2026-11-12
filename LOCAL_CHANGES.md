@@ -742,6 +742,23 @@ Run the focused check from the project root:
     `BenchmarkDrawNewImages` (four new images a frame): 145 allocations a
     frame to 21. On lavapipe memory is malloc's, and the CPU it saves is
     to be measured on a GPU.
+  - Measured on the laptop after it, on Intel, the window still took
+    25-35% more CPU on Vulkan than on OpenGL (1.30-1.43 s against
+    1.02-1.08 s per 15 s), in many small calls to C: the gpu package binds
+    the pipeline, the vertex buffer, the viewport and the textures for
+    each draw, and the backend made a call for each, wrote a new
+    descriptor set, pushed each range of push constants in a call of its
+    own, and made a barrier and a blit from Go for each mipmap level. Now
+    `Backend.bound` keeps what the command buffer has bound, cleared with
+    each new one, and leaves out a bind of the same pipeline, vertex
+    buffer or viewport; a texture bound again marks nothing; a descriptor
+    set written in the frame is taken again by the draws with the same
+    textures and buffers (`descPool.written`); `vk.CmdPushConstantRanges`
+    pushes every range in one call, and `vk.CmdGenerateMipmaps` makes the
+    levels in C. Calls to C a frame on lavapipe: `BenchmarkDrawUI` 606 to
+    405, `Benchmark1000Circles` 156 to 100, `BenchmarkDrawNewImages` 104
+    to 38. `TestDrawsBindOnce`, `TestVulkanMipmaps` (an image drawn at a
+    sixteenth samples its levels).
 - `app.SetGraphics`, `app.GraphicsChoice`, `app.VulkanDevices`
   (`app/graphics.go`, `app/vulkan_wayland.go`, `app/os_wayland.go`,
   `internal/vk/drivers.go`): on Wayland the program chooses the graphics

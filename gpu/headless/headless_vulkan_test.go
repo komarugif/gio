@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"testing"
 
+	"gioui.org/f32"
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
@@ -57,5 +58,48 @@ func TestVulkanFrameAllocs(t *testing.T) {
 	})
 	if allocs > 5 {
 		t.Errorf("a frame allocates %v times", allocs)
+	}
+}
+
+// An image drawn smaller samples its mipmap levels, which Vulkan fills by
+// blits in C (vk.CmdGenerateMipmaps): each must hold the image.
+func TestVulkanMipmaps(t *testing.T) {
+	ctx, err := newVulkanContext()
+	if err != nil {
+		t.Skipf("no Vulkan: %v", err)
+	}
+	w, err := newWindow(ctx, 32, 16)
+	if err != nil {
+		t.Skipf("no Vulkan window: %v", err)
+	}
+	defer w.Release()
+	img := image.NewRGBA(image.Rect(0, 0, 256, 128))
+	for y := range 128 {
+		for x := range 256 {
+			c := color.RGBA{R: 0xff, A: 0xff}
+			if x >= 128 {
+				c = color.RGBA{B: 0xff, A: 0xff}
+			}
+			img.SetRGBA(x, y, c)
+		}
+	}
+	ops := new(op.Ops)
+	op.Affine(f32.AffineId().Scale(f32.Point{}, f32.Pt(1.0/16, 1.0/16))).Add(ops)
+	paint.NewImageOp(img).Add(ops)
+	paint.PaintOp{}.Add(ops)
+	if err := w.Frame(ops); err != nil {
+		t.Fatal(err)
+	}
+	shot := image.NewRGBA(image.Rect(0, 0, 32, 16))
+	if err := w.Screenshot(shot); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		x, y int
+		want color.RGBA
+	}{{2, 4, color.RGBA{R: 0xff, A: 0xff}}, {13, 4, color.RGBA{B: 0xff, A: 0xff}}} {
+		if got := shot.RGBAAt(c.x, c.y); got != c.want {
+			t.Errorf("at (%d, %d) %v, want %v", c.x, c.y, got, c.want)
+		}
 	}
 }

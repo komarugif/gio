@@ -192,8 +192,50 @@ static void vkCmdBufferBarrier(PFN_vkCmdPipelineBarrier f, VkCommandBuffer comma
 	f(commandBuffer, srcStageMask, dstStageMask, dependencyFlags, 0, NULL, 1, &barrier, 0, NULL);
 }
 
-static void vkCmdPushConstants(PFN_vkCmdPushConstants f, VkCommandBuffer commandBuffer, VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void *pValues) {
-	f(commandBuffer, layout, stageFlags, offset, size, pValues);
+static void vkCmdPushConstantRanges(PFN_vkCmdPushConstants f, VkCommandBuffer commandBuffer, VkPipelineLayout layout, const VkPushConstantRange *ranges, uint32_t n, const uint8_t *values) {
+	for (uint32_t i = 0; i < n; i++) {
+		f(commandBuffer, layout, ranges[i].stageFlags, ranges[i].offset, ranges[i].size, values + ranges[i].offset);
+	}
+}
+
+// vkCmdGenerateMipmaps fills the mipmap levels of img from its first, in
+// layout TRANSFER_DST_OPTIMAL, by blitting each level to the next, and
+// leaves every level in TRANSFER_SRC_OPTIMAL.
+static void vkCmdGenerateMipmaps(PFN_vkCmdPipelineBarrier barrier, PFN_vkCmdBlitImage blit, VkCommandBuffer commandBuffer, VkImage img, int32_t width, int32_t height, uint32_t levels) {
+	VkImageMemoryBarrier b = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.image = img,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = VK_REMAINING_ARRAY_LAYERS,
+		},
+	};
+	int32_t w = width, h = height;
+	for (uint32_t i = 1; i < levels; i++) {
+		int32_t nw = w / 2, nh = h / 2;
+		if (nw < 1) nw = 1;
+		if (nh < 1) nh = 1;
+		// Transition the previous (source) level.
+		b.subresourceRange.baseMipLevel = i - 1;
+		barrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, NULL, 0, NULL, 1, &b);
+		VkImageBlit region = {
+			.srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = i - 1, .layerCount = 1},
+			.srcOffsets = {{0, 0, 0}, {w, h, 1}},
+			.dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = i, .layerCount = 1},
+			.dstOffsets = {{0, 0, 0}, {nw, nh, 1}},
+		};
+		blit(commandBuffer, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+		w = nw;
+		h = nh;
+	}
+	// The barrier of the last level.
+	b.subresourceRange.baseMipLevel = levels - 1;
+	barrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, NULL, 0, NULL, 1, &b);
 }
 
 static void vkCmdBindPipeline(PFN_vkCmdBindPipeline f, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline) {
@@ -1509,9 +1551,25 @@ func CmdBufferBarrier(cmdBuf CommandBuffer, srcStage, dstStage PipelineStageFlag
 	C.vkCmdBufferBarrier(funcs.vkCmdPipelineBarrier, cmdBuf, srcStage, dstStage, flags, barrier)
 }
 
-func CmdPushConstants(cmdBuf CommandBuffer, layout PipelineLayout, stages ShaderStageFlags, offset int, data []byte) {
-	C.vkCmdPushConstants(funcs.vkCmdPushConstants, cmdBuf, layout, stages, C.uint32_t(offset), C.uint32_t(len(data)),
-		unsafe.Pointer(unsafe.SliceData(data)))
+// CmdPushConstantRanges pushes each of ranges of data, at its offset in
+// data, in one call to C.
+func CmdPushConstantRanges(cmdBuf CommandBuffer, layout PipelineLayout, ranges []PushConstantRange, data []byte) {
+	if len(ranges) == 0 {
+		return
+	}
+	for _, r := range ranges {
+		if int(r.offset+r.size) > len(data) {
+			panic("vulkan: push constant range out of the data")
+		}
+	}
+	C.vkCmdPushConstantRanges(funcs.vkCmdPushConstants, cmdBuf, layout, &ranges[0], C.uint32_t(len(ranges)), (*C.uint8_t)(unsafe.SliceData(data)))
+}
+
+// CmdGenerateMipmaps fills the mipmap levels of img, of width and height,
+// from its first level, in layout TRANSFER_DST_OPTIMAL, in one call to C;
+// every level is left in TRANSFER_SRC_OPTIMAL.
+func CmdGenerateMipmaps(cmdBuf CommandBuffer, img Image, width, height, levels int) {
+	C.vkCmdGenerateMipmaps(funcs.vkCmdPipelineBarrier, funcs.vkCmdBlitImage, cmdBuf, img, C.int32_t(width), C.int32_t(height), C.uint32_t(levels))
 }
 
 func CmdBindPipeline(cmdBuf CommandBuffer, bindPoint PipelineBindPoint, pipe Pipeline) {
