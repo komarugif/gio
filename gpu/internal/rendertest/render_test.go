@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"runtime"
 	"testing"
 
 	"golang.org/x/image/colornames"
@@ -217,10 +218,10 @@ func TestPathKeptOverFrames(t *testing.T) {
 	paint.FillShape(kept, red, rr.Op(kept))
 	call := m.Stop()
 	ops := new(op.Ops)
-	// The shared buffer may shrink in every 60th frame (sharedVertsFrames),
-	// to the most the 60 frames before needed: the 120th is the first
+	// The shared buffer may shrink in every 600th frame (sharedVertsFrames),
+	// to the most the 600 frames before needed: the 1200th is the first
 	// after the large first frame.
-	const shrinks = 119
+	const shrinks = 1199
 	for i := range shrinks + 4 {
 		ops.Reset()
 		x := 8 + i%8*8
@@ -231,11 +232,19 @@ func TestPathKeptOverFrames(t *testing.T) {
 				paint.FillShape(ops, black, clip.Ellipse(image.Rect(x, y, x+8, y+8)).Op(ops))
 			}
 		}
+		if i > shrinks {
+			// New vertices where the kept path's were in the frame before,
+			// for it not to be drawn from what the GPU's buffer kept.
+			paint.FillShape(ops, black, clip.Ellipse(image.Rect(4, 80, 44, 120)).Op(ops))
+		}
 		if i >= shrinks {
 			call.Add(ops)
 		}
 		if err := w.Frame(ops); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
+		}
+		if i > 2 && i < shrinks-2 {
+			continue
 		}
 		img := image.NewRGBA(image.Rectangle{Max: sz})
 		if err := w.Screenshot(img); err != nil {
@@ -251,6 +260,44 @@ func TestPathKeptOverFrames(t *testing.T) {
 		}
 		r.expect(92, 92, colornames.Red)
 		r.expect(66, 92, colornames.Red)
+	}
+}
+
+// TestLargeFramesNowAndThen draws frames of new paths with a large one
+// every 100 frames, as scrolling makes: the shared buffer of paths and the
+// vertices behind it keep their size between them, instead of shrinking
+// and growing anew in copies after each.
+func TestLargeFramesNowAndThen(t *testing.T) {
+	w := newWindow(t, 128, 128)
+	defer w.Release()
+	ops := new(op.Ops)
+	frame := func(i int) {
+		ops.Reset()
+		n := 100
+		if i%100 == 0 {
+			n = 2000
+		}
+		for j := range n {
+			x, y := j%16*8, j/16*4%128
+			paint.FillShape(ops, black, clip.RRect{Rect: image.Rect(x, y, x+7, y+3), NE: 1, NW: 1, SE: 1, SW: 1}.Op(ops))
+		}
+		if err := w.Frame(ops); err != nil {
+			t.Fatalf("frame %d: %v", i, err)
+		}
+	}
+	for i := range 200 {
+		frame(i)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	const frames = 400
+	for i := range frames {
+		frame(200 + i)
+	}
+	runtime.ReadMemStats(&after)
+	// The ops and the frame make a few kB of their own.
+	if perFrame := (after.TotalAlloc - before.TotalAlloc) / frames; perFrame > 32<<10 {
+		t.Errorf("%d bytes allocated a frame", perFrame)
 	}
 }
 

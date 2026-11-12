@@ -667,10 +667,15 @@ Run the focused check from the project root:
     frame before, which is kept for this, and stays in the cache as
     upstream's did.
   - The buffer grows by powers of two. It shrinks, with both `vertCache`s,
-    only in every 60th frame, to the most the 60 frames before needed, once
-    that is less than a quarter of it (64 KiB at least): frames whose need
-    went up and down across a quarter made the buffer and the slices anew
-    every few frames.
+    only in every 600th frame (about 10 s at 60 Hz), to the most the 600
+    frames before needed, once that is less than a quarter of it (64 KiB
+    at least): frames whose need went up and down across a quarter made
+    the buffer and the slices anew every few frames, and with every 60th
+    frame a large one now and then (scrolling, a page opening) made them
+    grow anew after each, 330 kB of garbage a frame. A `vertCache` grows
+    at least twice where it must, not by the quarter appending gives a
+    large slice, and starts each frame as large as the buffer.
+    `TestLargeFramesNowAndThen`.
   - Measured on Linux with a hardware GPU (a laptop with an i5-12500H,
     NVIDIA's driver 610.43 and Mesa both loaded): `Benchmark1000Circles`
     4.02 → 2.65 ms, `BenchmarkDrawUI` 1.27 → 1.09 ms,

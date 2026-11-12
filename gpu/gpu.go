@@ -1081,7 +1081,10 @@ func (d *drawOps) reset(viewport image.Point) {
 	d.imageOps = d.imageOps[:0]
 	d.pathOps = d.pathOps[:0]
 	d.pathOpCache = d.pathOpCache[:0]
-	d.prevVertCache, d.vertCache = d.vertCache, d.prevVertCache[:0]
+	// The shared buffer is as large as the most the frames before needed:
+	// make room for that at once, not in the dozens of steps appending
+	// grows by, for the slice dropped when the buffer last shrank.
+	d.prevVertCache, d.vertCache = d.vertCache, slices.Grow(d.prevVertCache[:0], d.sharedBufSize)
 	d.transStack = d.transStack[:0]
 	d.layers = d.layers[:0]
 	d.opacityStack = d.opacityStack[:0]
@@ -1134,9 +1137,10 @@ const (
 	// minSharedVerts is the smallest size of the shared buffer of paths.
 	minSharedVerts = 64 << 10
 	// sharedVertsFrames is how many frames the shared buffer stays as
-	// large as their largest need before it shrinks: frames that need a
-	// little less now and then would make it and its slices anew in each.
-	sharedVertsFrames = 60
+	// large as their largest need before it shrinks, about 10 s at 60 Hz:
+	// a large frame now and then, as scrolling or a page opening makes,
+	// made it and its slices grow anew after each time it shrank.
+	sharedVertsFrames = 600
 )
 
 func (d *drawOps) uploadSharedVerts(ctx driver.Device) {
@@ -1732,6 +1736,11 @@ func fillContourMaxY(maxy float32, verts []byte) {
 }
 
 func (d *drawOps) writeVertCache(n int) []byte {
+	if l := len(d.vertCache); l+n > cap(d.vertCache) {
+		// Double at least: appending grows a large slice by a quarter,
+		// and a large frame grew it in a dozen copies.
+		d.vertCache = slices.Grow(d.vertCache, max(n, l))
+	}
 	d.vertCache = append(d.vertCache, make([]byte, n)...)
 	return d.vertCache[len(d.vertCache)-n:]
 }
