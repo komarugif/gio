@@ -692,5 +692,7 @@ Run the focused check from the project root:
   `app.SoftwareRendered` is. The messenger's profiler records it: on a
   machine with two GPUs nothing else told which of them drew, since the
   libraries of both are loaded and Go's CPU profile shows no C frames.
-  `gpu/headless` `TestDevice`. Built and run on Linux with OpenGL only;
-  Direct3D 11 vetted for Windows, Vulkan and Metal not compiled.
+  `gpu/headless` `TestDevice`, on Linux with OpenGL and with Vulkan on
+  lavapipe (EGL hidden by `__EGL_VENDOR_LIBRARY_FILENAMES`); Direct3D 11
+  told "NVIDIA GeForce RTX 5060 (10de:2d05), driver 32.0.16.2114" on
+  Windows. Metal not compiled.
