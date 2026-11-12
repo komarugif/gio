@@ -307,3 +307,36 @@ var textRows = []string{
 	"satisfied with a slight and superficial knowledge; nor quickly to",
 	"assent to great talkers. I have him to thank that I met with the",
 }
+
+func BenchmarkDrawNewImages(b *testing.B) {
+	// BenchmarkDrawNewImages draws a new image in each of four places every
+	// frame, as frames of animations are, so that textures are made and let
+	// go at every frame.
+	gtx, w, _ := setupBenchmark(b)
+	defer w.Release()
+	frames := make([]*image.RGBA, 8)
+	for i := range frames {
+		img := image.NewRGBA(image.Rect(0, 0, 240, 180))
+		for p := 0; p < len(img.Pix); p += 4 {
+			img.Pix[p], img.Pix[p+1], img.Pix[p+2], img.Pix[p+3] = byte(i*30), byte(p), 0x80, 0xff
+		}
+		frames[i] = img
+	}
+	draw := func(i int) {
+		resetOps(gtx)
+		for j := range 4 {
+			t := op.Offset(image.Pt(j*250, j*190)).Push(gtx.Ops)
+			paint.NewImageOp(frames[(i+j)%len(frames)]).Add(gtx.Ops)
+			paint.PaintOp{}.Add(gtx.Ops)
+			t.Pop()
+		}
+		w.Frame(gtx.Ops)
+	}
+	draw(0)
+	b.ReportAllocs()
+
+	for i := 1; b.Loop(); i++ {
+		draw(i)
+	}
+	finishBenchmark(b, w)
+}

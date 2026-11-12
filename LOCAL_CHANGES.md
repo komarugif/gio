@@ -714,6 +714,34 @@ Run the focused check from the project root:
   already. It applies to Android's Vulkan as well; an opaque window paints
   every pixel opaque and looks the same. `TestCompositeAlpha`; not seen on
   a screen yet.
+- `internal/vk/vulkan.go`, `gpu/internal/vulkan/vulkan.go`: the Vulkan
+  backend allocates no Go memory for each command a frame records, and
+  reuses the images of textures let go. On a laptop (Intel ADL GT2, Mesa
+  26.1.6, KWin) a messenger drawing GIFs spent 1.36 s of CPU per 15 s on
+  Vulkan against 1.00 s on EGL, and made 10 MB/s of garbage against 7.
+  - The wrappers of `internal/vk` passed C pointers to Go memory: a
+    barrier in a slice of one, a viewport, the `pImageInfo` of a write of
+    a descriptor, a descriptor set, the swapchain and index of a present,
+    the clear color, the command buffer of a submit. cgo moves memory such
+    a pointer points to to the heap, about 150 allocations a frame. The
+    structures go by value now, and C points to its copy:
+    `CmdImageBarrier`, `CmdBufferBarrier` (for `CmdPipelineBarrier`),
+    `UpdateDescriptorSetImage`, `UpdateDescriptorSetBuffer`,
+    `CmdBindDescriptorSet`, and the copies and blits of one region.
+    `BenchmarkDrawUI` on lavapipe: 270 allocations a frame to 11,
+    `Benchmark1000Circles` 62 to 5, `BenchmarkDrawUICached` 115 to 9.
+    `TestVulkanFrameAllocs` (`gpu/headless`).
+  - A texture made each frame, as a frame of an animation is, made a
+    sampler, an image and its memory (`vkAllocateMemory`), and let them
+    go a frame later (`vkFreeMemory`): 0.9 s of the 15 on the laptop.
+    Samplers are now the backend's, one for each set of filters, and an
+    image let go, with its memory, view and framebuffer, is kept once the
+    frames that drew with it are done, for a texture of its format, size,
+    mipmaps and usage made after it; one not taken for three frames is
+    destroyed, as is the oldest beyond sixteen. `TestTexturesReuseImages`;
+    `BenchmarkDrawNewImages` (four new images a frame): 145 allocations a
+    frame to 21. On lavapipe memory is malloc's, and the CPU it saves is
+    to be measured on a GPU.
 - `app.SetGraphics`, `app.GraphicsChoice`, `app.VulkanDevices`
   (`app/graphics.go`, `app/vulkan_wayland.go`, `app/os_wayland.go`,
   `internal/vk/drivers.go`): on Wayland the program chooses the graphics

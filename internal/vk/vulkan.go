@@ -160,11 +160,15 @@ static VkResult vkEndCommandBuffer(PFN_vkEndCommandBuffer f, VkCommandBuffer com
 	return f(commandBuffer);
 }
 
-static VkResult vkQueueSubmit(PFN_vkQueueSubmit f, VkQueue queue, VkSubmitInfo pSubmits, VkFence fence) {
+static VkResult vkQueueSubmit(PFN_vkQueueSubmit f, VkQueue queue, VkSubmitInfo pSubmits, VkCommandBuffer buf, VkFence fence) {
+	pSubmits.commandBufferCount = 1;
+	pSubmits.pCommandBuffers = &buf;
 	return f(queue, 1, &pSubmits, fence);
 }
 
-static void vkCmdBeginRenderPass(PFN_vkCmdBeginRenderPass f, VkCommandBuffer commandBuffer, VkRenderPassBeginInfo pRenderPassBegin, VkSubpassContents contents) {
+static void vkCmdBeginRenderPass(PFN_vkCmdBeginRenderPass f, VkCommandBuffer commandBuffer, VkRenderPassBeginInfo pRenderPassBegin, VkClearValue clear, VkSubpassContents contents) {
+	pRenderPassBegin.clearValueCount = 1;
+	pRenderPassBegin.pClearValues = &clear;
 	f(commandBuffer, &pRenderPassBegin, contents);
 }
 
@@ -172,16 +176,20 @@ static void vkCmdEndRenderPass(PFN_vkCmdEndRenderPass f, VkCommandBuffer command
 	f(commandBuffer);
 }
 
-static void vkCmdCopyBuffer(PFN_vkCmdCopyBuffer f, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy *pRegions) {
-	f(commandBuffer, srcBuffer, dstBuffer, regionCount, pRegions);
+static void vkCmdCopyBuffer(PFN_vkCmdCopyBuffer f, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, VkBufferCopy region) {
+	f(commandBuffer, srcBuffer, dstBuffer, 1, &region);
 }
 
-static void vkCmdCopyBufferToImage(PFN_vkCmdCopyBufferToImage f, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy *pRegions) {
-	f(commandBuffer, srcBuffer, dstImage, dstImageLayout, regionCount, pRegions);
+static void vkCmdCopyBufferToImage(PFN_vkCmdCopyBufferToImage f, VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, VkBufferImageCopy region) {
+	f(commandBuffer, srcBuffer, dstImage, dstImageLayout, 1, &region);
 }
 
-static void vkCmdPipelineBarrier(PFN_vkCmdPipelineBarrier f, VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, uint32_t memoryBarrierCount, const VkMemoryBarrier *pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier *pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier *pImageMemoryBarriers) {
-	f(commandBuffer, srcStageMask, dstStageMask, dependencyFlags, memoryBarrierCount, pMemoryBarriers, bufferMemoryBarrierCount, pBufferMemoryBarriers, imageMemoryBarrierCount, pImageMemoryBarriers);
+static void vkCmdImageBarrier(PFN_vkCmdPipelineBarrier f, VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, VkImageMemoryBarrier barrier) {
+	f(commandBuffer, srcStageMask, dstStageMask, dependencyFlags, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+static void vkCmdBufferBarrier(PFN_vkCmdPipelineBarrier f, VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, VkBufferMemoryBarrier barrier) {
+	f(commandBuffer, srcStageMask, dstStageMask, dependencyFlags, 0, NULL, 1, &barrier, 0, NULL);
 }
 
 static void vkCmdPushConstants(PFN_vkCmdPushConstants f, VkCommandBuffer commandBuffer, VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void *pValues) {
@@ -196,8 +204,8 @@ static void vkCmdBindVertexBuffers(PFN_vkCmdBindVertexBuffers f, VkCommandBuffer
 	f(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
 }
 
-static void vkCmdSetViewport(PFN_vkCmdSetViewport f, VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport *pViewports) {
-	f(commandBuffer, firstViewport, viewportCount, pViewports);
+static void vkCmdSetViewport(PFN_vkCmdSetViewport f, VkCommandBuffer commandBuffer, VkViewport viewport) {
+	f(commandBuffer, 0, 1, &viewport);
 }
 
 static void vkCmdBindIndexBuffer(PFN_vkCmdBindIndexBuffer f, VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType) {
@@ -212,12 +220,12 @@ static void vkCmdDrawIndexed(PFN_vkCmdDrawIndexed f, VkCommandBuffer commandBuff
 	f(commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 
-static void vkCmdBindDescriptorSets(PFN_vkCmdBindDescriptorSets f, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet *pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t *pDynamicOffsets) {
-	f(commandBuffer, pipelineBindPoint, layout, firstSet, descriptorSetCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+static void vkCmdBindDescriptorSet(PFN_vkCmdBindDescriptorSets f, VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, VkDescriptorSet set) {
+	f(commandBuffer, pipelineBindPoint, layout, firstSet, 1, &set, 0, NULL);
 }
 
-static void vkCmdCopyImageToBuffer(PFN_vkCmdCopyImageToBuffer f, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy *pRegions) {
-	f(commandBuffer, srcImage, srcImageLayout, dstBuffer, regionCount, pRegions);
+static void vkCmdCopyImageToBuffer(PFN_vkCmdCopyImageToBuffer f, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkBuffer dstBuffer, VkBufferImageCopy region) {
+	f(commandBuffer, srcImage, srcImageLayout, dstBuffer, 1, &region);
 }
 
 static void vkCmdDispatch(PFN_vkCmdDispatch f, VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) {
@@ -340,20 +348,26 @@ static VkResult vkFreeDescriptorSets(PFN_vkFreeDescriptorSets f, VkDevice device
 	return f(device, descriptorPool, descriptorSetCount, pDescriptorSets);
 }
 
-static void vkUpdateDescriptorSets(PFN_vkUpdateDescriptorSets f, VkDevice device, VkWriteDescriptorSet pDescriptorWrite, uint32_t descriptorCopyCount, const VkCopyDescriptorSet *pDescriptorCopies) {
-	f(device, 1, &pDescriptorWrite, descriptorCopyCount, pDescriptorCopies);
+static void vkUpdateDescriptorSetImage(PFN_vkUpdateDescriptorSets f, VkDevice device, VkWriteDescriptorSet write, VkDescriptorImageInfo info) {
+	write.pImageInfo = &info;
+	f(device, 1, &write, 0, NULL);
+}
+
+static void vkUpdateDescriptorSetBuffer(PFN_vkUpdateDescriptorSets f, VkDevice device, VkWriteDescriptorSet write, VkDescriptorBufferInfo info) {
+	write.pBufferInfo = &info;
+	f(device, 1, &write, 0, NULL);
 }
 
 static VkResult vkResetDescriptorPool(PFN_vkResetDescriptorPool f, VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorPoolResetFlags flags) {
 	return f(device, descriptorPool, flags);
 }
 
-static void vkCmdBlitImage(PFN_vkCmdBlitImage f, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageBlit* pRegions, VkFilter filter) {
-	f(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions, filter);
+static void vkCmdBlitImage(PFN_vkCmdBlitImage f, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, VkImageBlit region, VkFilter filter) {
+	f(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, 1, &region, filter);
 }
 
-static void vkCmdCopyImage(PFN_vkCmdCopyImage f, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageCopy *pRegions) {
-	f(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, regionCount, pRegions);
+static void vkCmdCopyImage(PFN_vkCmdCopyImage f, VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, VkImageCopy region) {
+	f(commandBuffer, srcImage, srcImageLayout, dstImage, dstImageLayout, 1, &region);
 }
 
 static VkResult vkCreateComputePipelines(PFN_vkCreateComputePipelines f, VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkComputePipelineCreateInfo *pCreateInfos, const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines) {
@@ -425,8 +439,18 @@ static struct intAndResult vkAcquireNextImageKHR(PFN_vkAcquireNextImageKHR f, Vk
 	return res;
 }
 
-static VkResult vkQueuePresentKHR(PFN_vkQueuePresentKHR f, VkQueue queue, const VkPresentInfoKHR pPresentInfo) {
-	return f(queue, &pPresentInfo);
+static VkResult vkQueuePresentKHR(PFN_vkQueuePresentKHR f, VkQueue queue, VkSwapchainKHR swapchain, VkSemaphore sem, uint32_t imgIdx) {
+	VkPresentInfoKHR inf = {
+		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+		.swapchainCount = 1,
+		.pSwapchains = &swapchain,
+		.pImageIndices = &imgIdx,
+	};
+	if (sem != VK_NULL_HANDLE) {
+		inf.waitSemaphoreCount = 1;
+		inf.pWaitSemaphores = &sem;
+	}
+	return f(queue, &inf);
 }
 */
 import "C"
@@ -1232,18 +1256,7 @@ func AcquireNextImage(d Device, swchain Swapchain, sem Semaphore, fence Fence) (
 }
 
 func PresentQueue(q Queue, swchain Swapchain, sem Semaphore, imgIdx int) error {
-	cidx := C.uint32_t(imgIdx)
-	inf := C.VkPresentInfoKHR{
-		sType:          C.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-		swapchainCount: 1,
-		pSwapchains:    &swchain,
-		pImageIndices:  &cidx,
-	}
-	if sem != nilSemaphore {
-		inf.waitSemaphoreCount = 1
-		inf.pWaitSemaphores = &sem
-	}
-	if err := vkErr(C.vkQueuePresentKHR(funcs.vkQueuePresentKHR, q, inf)); err != nil {
+	if err := vkErr(C.vkQueuePresentKHR(funcs.vkQueuePresentKHR, q, swchain, sem, C.uint32_t(imgIdx))); err != nil {
 		return fmt.Errorf("vulkan: vkQueuePresentKHR: %w", err)
 	}
 	return nil
@@ -1436,9 +1449,7 @@ func EndCommandBuffer(buf CommandBuffer) error {
 
 func QueueSubmit(q Queue, buf CommandBuffer, waitSems []Semaphore, waitStages []PipelineStageFlags, sigSems []Semaphore, fence Fence) error {
 	inf := C.VkSubmitInfo{
-		sType:              C.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		commandBufferCount: 1,
-		pCommandBuffers:    &buf,
+		sType: C.VK_STRUCTURE_TYPE_SUBMIT_INFO,
 	}
 	if len(waitSems) > 0 {
 		if len(waitSems) != len(waitStages) {
@@ -1452,23 +1463,22 @@ func QueueSubmit(q Queue, buf CommandBuffer, waitSems []Semaphore, waitStages []
 		inf.signalSemaphoreCount = C.uint32_t(len(sigSems))
 		inf.pSignalSemaphores = &sigSems[0]
 	}
-	if err := vkErr(C.vkQueueSubmit(funcs.vkQueueSubmit, q, inf, fence)); err != nil {
+	if err := vkErr(C.vkQueueSubmit(funcs.vkQueueSubmit, q, inf, buf, fence)); err != nil {
 		return fmt.Errorf("vulkan: vkQueueSubmit: %w", err)
 	}
 	return nil
 }
 
 func CmdBeginRenderPass(buf CommandBuffer, rp RenderPass, fbo Framebuffer, width, height int, clearCol [4]float32) {
-	cclearCol := [4]C.float{C.float(clearCol[0]), C.float(clearCol[1]), C.float(clearCol[2]), C.float(clearCol[3])}
+	var clear C.VkClearValue
+	*(*[4]C.float)(unsafe.Pointer(&clear)) = [4]C.float{C.float(clearCol[0]), C.float(clearCol[1]), C.float(clearCol[2]), C.float(clearCol[3])}
 	inf := C.VkRenderPassBeginInfo{
-		sType:           C.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-		renderPass:      rp,
-		framebuffer:     fbo,
-		renderArea:      C.VkRect2D{extent: C.VkExtent2D{width: C.uint32_t(width), height: C.uint32_t(height)}},
-		clearValueCount: 1,
-		pClearValues:    (*C.VkClearValue)(unsafe.Pointer(&cclearCol)),
+		sType:       C.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+		renderPass:  rp,
+		framebuffer: fbo,
+		renderArea:  C.VkRect2D{extent: C.VkExtent2D{width: C.uint32_t(width), height: C.uint32_t(height)}},
 	}
-	C.vkCmdBeginRenderPass(funcs.vkCmdBeginRenderPass, buf, inf, C.VK_SUBPASS_CONTENTS_INLINE)
+	C.vkCmdBeginRenderPass(funcs.vkCmdBeginRenderPass, buf, inf, clear, C.VK_SUBPASS_CONTENTS_INLINE)
 }
 
 func CmdEndRenderPass(buf CommandBuffer) {
@@ -1476,7 +1486,7 @@ func CmdEndRenderPass(buf CommandBuffer) {
 }
 
 func CmdCopyBuffer(cmdBuf CommandBuffer, src, dst Buffer, srcOff, dstOff, size int) {
-	C.vkCmdCopyBuffer(funcs.vkCmdCopyBuffer, cmdBuf, src, dst, 1, &C.VkBufferCopy{
+	C.vkCmdCopyBuffer(funcs.vkCmdCopyBuffer, cmdBuf, src, dst, C.VkBufferCopy{
 		srcOffset: C.VkDeviceSize(srcOff),
 		dstOffset: C.VkDeviceSize(dstOff),
 		size:      C.VkDeviceSize(size),
@@ -1484,26 +1494,19 @@ func CmdCopyBuffer(cmdBuf CommandBuffer, src, dst Buffer, srcOff, dstOff, size i
 }
 
 func CmdCopyBufferToImage(cmdBuf CommandBuffer, src Buffer, dst Image, layout ImageLayout, copy BufferImageCopy) {
-	C.vkCmdCopyBufferToImage(funcs.vkCmdCopyBufferToImage, cmdBuf, src, dst, layout, 1, &copy)
+	C.vkCmdCopyBufferToImage(funcs.vkCmdCopyBufferToImage, cmdBuf, src, dst, layout, copy)
 }
 
-func CmdPipelineBarrier(cmdBuf CommandBuffer, srcStage, dstStage PipelineStageFlags, flags DependencyFlags, memBarriers []MemoryBarrier, bufBarriers []BufferMemoryBarrier, imgBarriers []ImageMemoryBarrier) {
-	var memPtr *MemoryBarrier
-	if len(memBarriers) > 0 {
-		memPtr = &memBarriers[0]
-	}
-	var bufPtr *BufferMemoryBarrier
-	if len(bufBarriers) > 0 {
-		bufPtr = &bufBarriers[0]
-	}
-	var imgPtr *ImageMemoryBarrier
-	if len(imgBarriers) > 0 {
-		imgPtr = &imgBarriers[0]
-	}
-	C.vkCmdPipelineBarrier(funcs.vkCmdPipelineBarrier, cmdBuf, srcStage, dstStage, flags,
-		C.uint32_t(len(memBarriers)), memPtr,
-		C.uint32_t(len(bufBarriers)), bufPtr,
-		C.uint32_t(len(imgBarriers)), imgPtr)
+// CmdImageBarrier and CmdBufferBarrier record a pipeline barrier of one
+// barrier. The structures go to C by value, built there: Go memory a
+// pointer of a call to C points to escapes to the heap, an allocation for
+// each of the many barriers of a frame.
+func CmdImageBarrier(cmdBuf CommandBuffer, srcStage, dstStage PipelineStageFlags, flags DependencyFlags, barrier ImageMemoryBarrier) {
+	C.vkCmdImageBarrier(funcs.vkCmdPipelineBarrier, cmdBuf, srcStage, dstStage, flags, barrier)
+}
+
+func CmdBufferBarrier(cmdBuf CommandBuffer, srcStage, dstStage PipelineStageFlags, flags DependencyFlags, barrier BufferMemoryBarrier) {
+	C.vkCmdBufferBarrier(funcs.vkCmdPipelineBarrier, cmdBuf, srcStage, dstStage, flags, barrier)
 }
 
 func CmdPushConstants(cmdBuf CommandBuffer, layout PipelineLayout, stages ShaderStageFlags, offset int, data []byte) {
@@ -1522,11 +1525,8 @@ func CmdBindVertexBuffers(cmdBuf CommandBuffer, first int, buffers []Buffer, siz
 	C.vkCmdBindVertexBuffers(funcs.vkCmdBindVertexBuffers, cmdBuf, C.uint32_t(first), C.uint32_t(len(buffers)), &buffers[0], &sizes[0])
 }
 
-func CmdSetViewport(cmdBuf CommandBuffer, first int, viewports ...Viewport) {
-	if len(viewports) == 0 {
-		return
-	}
-	C.vkCmdSetViewport(funcs.vkCmdSetViewport, cmdBuf, C.uint32_t(first), C.uint32_t(len(viewports)), &viewports[0])
+func CmdSetViewport(cmdBuf CommandBuffer, viewport Viewport) {
+	C.vkCmdSetViewport(funcs.vkCmdSetViewport, cmdBuf, viewport)
 }
 
 func CmdBindIndexBuffer(cmdBuf CommandBuffer, buffer Buffer, offset int, typ IndexType) {
@@ -1617,29 +1617,20 @@ func GetPhysicalDeviceFormatProperties(physDev PhysicalDevice, format Format) Fo
 	return FormatFeatureFlags(props.optimalTilingFeatures)
 }
 
-func CmdBindDescriptorSets(cmdBuf CommandBuffer, point PipelineBindPoint, layout PipelineLayout, firstSet int, sets []DescriptorSet) {
-	C.vkCmdBindDescriptorSets(funcs.vkCmdBindDescriptorSets, cmdBuf, point, layout, C.uint32_t(firstSet), C.uint32_t(len(sets)), &sets[0], 0, nil)
+func CmdBindDescriptorSet(cmdBuf CommandBuffer, point PipelineBindPoint, layout PipelineLayout, firstSet int, set DescriptorSet) {
+	C.vkCmdBindDescriptorSet(funcs.vkCmdBindDescriptorSets, cmdBuf, point, layout, C.uint32_t(firstSet), set)
 }
 
-func CmdBlitImage(cmdBuf CommandBuffer, src Image, srcLayout ImageLayout, dst Image, dstLayout ImageLayout, regions []ImageBlit, filter Filter) {
-	if len(regions) == 0 {
-		return
-	}
-	C.vkCmdBlitImage(funcs.vkCmdBlitImage, cmdBuf, src, srcLayout, dst, dstLayout, C.uint32_t(len(regions)), &regions[0], filter)
+func CmdBlitImage(cmdBuf CommandBuffer, src Image, srcLayout ImageLayout, dst Image, dstLayout ImageLayout, region ImageBlit, filter Filter) {
+	C.vkCmdBlitImage(funcs.vkCmdBlitImage, cmdBuf, src, srcLayout, dst, dstLayout, region, filter)
 }
 
-func CmdCopyImage(cmdBuf CommandBuffer, src Image, srcLayout ImageLayout, dst Image, dstLayout ImageLayout, regions []ImageCopy) {
-	if len(regions) == 0 {
-		return
-	}
-	C.vkCmdCopyImage(funcs.vkCmdCopyImage, cmdBuf, src, srcLayout, dst, dstLayout, C.uint32_t(len(regions)), &regions[0])
+func CmdCopyImage(cmdBuf CommandBuffer, src Image, srcLayout ImageLayout, dst Image, dstLayout ImageLayout, region ImageCopy) {
+	C.vkCmdCopyImage(funcs.vkCmdCopyImage, cmdBuf, src, srcLayout, dst, dstLayout, region)
 }
 
-func CmdCopyImageToBuffer(cmdBuf CommandBuffer, src Image, srcLayout ImageLayout, dst Buffer, regions []BufferImageCopy) {
-	if len(regions) == 0 {
-		return
-	}
-	C.vkCmdCopyImageToBuffer(funcs.vkCmdCopyImageToBuffer, cmdBuf, src, srcLayout, dst, C.uint32_t(len(regions)), &regions[0])
+func CmdCopyImageToBuffer(cmdBuf CommandBuffer, src Image, srcLayout ImageLayout, dst Buffer, region BufferImageCopy) {
+	C.vkCmdCopyImageToBuffer(funcs.vkCmdCopyImageToBuffer, cmdBuf, src, srcLayout, dst, region)
 }
 
 func CmdDispatch(cmdBuf CommandBuffer, x, y, z int) {
@@ -1988,8 +1979,32 @@ func ResetDescriptorPool(d Device, pool DescriptorPool) error {
 	return nil
 }
 
-func UpdateDescriptorSet(d Device, write WriteDescriptorSet) {
-	C.vkUpdateDescriptorSets(funcs.vkUpdateDescriptorSets, d, write, 0, nil)
+// UpdateDescriptorSetImage and UpdateDescriptorSetBuffer write one
+// descriptor of set, with the image or the buffer's information built in
+// C: a pointer to it from Go would escape to the heap.
+func UpdateDescriptorSetImage(d Device, set DescriptorSet, binding int, typ DescriptorType, sampler Sampler, view ImageView, layout ImageLayout) {
+	C.vkUpdateDescriptorSetImage(funcs.vkUpdateDescriptorSets, d, writeDescriptorSet(set, binding, typ), C.VkDescriptorImageInfo{
+		sampler:     sampler,
+		imageView:   view,
+		imageLayout: layout,
+	})
+}
+
+func UpdateDescriptorSetBuffer(d Device, set DescriptorSet, binding int, typ DescriptorType, buf Buffer) {
+	C.vkUpdateDescriptorSetBuffer(funcs.vkUpdateDescriptorSets, d, writeDescriptorSet(set, binding, typ), C.VkDescriptorBufferInfo{
+		buffer: buf,
+		_range: C.VK_WHOLE_SIZE,
+	})
+}
+
+func writeDescriptorSet(set DescriptorSet, binding int, typ DescriptorType) C.VkWriteDescriptorSet {
+	return C.VkWriteDescriptorSet{
+		sType:           C.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		dstSet:          set,
+		dstBinding:      C.uint32_t(binding),
+		descriptorCount: 1,
+		descriptorType:  typ,
+	}
 }
 
 func AllocateDescriptorSets(d Device, pool DescriptorPool, layout DescriptorSetLayout, count int) ([]DescriptorSet, error) {
@@ -2092,35 +2107,6 @@ func BuildDescriptorPoolSize(typ DescriptorType, count int) DescriptorPoolSize {
 	return C.VkDescriptorPoolSize{
 		_type:           typ,
 		descriptorCount: C.uint32_t(count),
-	}
-}
-
-func BuildWriteDescriptorSetImage(set DescriptorSet, binding int, typ DescriptorType, sampler Sampler, view ImageView, layout ImageLayout) WriteDescriptorSet {
-	return C.VkWriteDescriptorSet{
-		sType:           C.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		dstSet:          set,
-		dstBinding:      C.uint32_t(binding),
-		descriptorCount: 1,
-		descriptorType:  typ,
-		pImageInfo: &C.VkDescriptorImageInfo{
-			sampler:     sampler,
-			imageView:   view,
-			imageLayout: layout,
-		},
-	}
-}
-
-func BuildWriteDescriptorSetBuffer(set DescriptorSet, binding int, typ DescriptorType, buf Buffer) WriteDescriptorSet {
-	return C.VkWriteDescriptorSet{
-		sType:           C.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		dstSet:          set,
-		dstBinding:      C.uint32_t(binding),
-		descriptorCount: 1,
-		descriptorType:  typ,
-		pBufferInfo: &C.VkDescriptorBufferInfo{
-			buffer: buf,
-			_range: C.VK_WHOLE_SIZE,
-		},
 	}
 }
 

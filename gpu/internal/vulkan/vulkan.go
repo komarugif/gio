@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"math/bits"
+	"slices"
 
 	"gioui.org/gpu/internal/driver"
 	"gioui.org/internal/vk"
@@ -58,7 +59,52 @@ type Backend struct {
 	}
 
 	caps driver.Features
+
+	// samplers are the samplers of textures, by their filters, shared:
+	// a texture made each frame, as a frame of an animation is, made one.
+	samplers map[samplerKey]vk.Sampler
+	// freeImages are the images of textures let go, with their memory,
+	// kept for a texture made after them in their format and size: making
+	// and freeing memory of the device for each frame of an animation took
+	// more CPU than drawing it. Those not taken for freeImageFrames frames,
+	// or beyond maxFreeImages, are destroyed.
+	freeImages []freeImage
+	// frames counts the frames begun, for freeImages' ages.
+	frames int
 }
+
+type samplerKey struct {
+	min, mag   vk.Filter
+	mipmapMode vk.SamplerMipmapMode
+}
+
+// imageKey is what a texture's image is made for: an image let go serves
+// a texture made with the same.
+type imageKey struct {
+	format        vk.Format
+	width, height int
+	mipmaps       int
+	usage         vk.ImageUsageFlags
+	framebuffer   bool
+}
+
+func (k imageKey) size() image.Point {
+	return image.Pt(k.width, k.height)
+}
+
+type freeImage struct {
+	key   imageKey
+	img   vk.Image
+	mem   vk.DeviceMemory
+	view  vk.ImageView
+	fbo   vk.Framebuffer
+	frame int
+}
+
+const (
+	freeImageFrames = 3
+	maxFreeImages   = 16
+)
 
 type passKey struct {
 	fmt         vk.Format
@@ -69,6 +115,7 @@ type passKey struct {
 
 type Texture struct {
 	backend    *Backend
+	key        imageKey
 	img        vk.Image
 	mem        vk.DeviceMemory
 	view       vk.ImageView
@@ -173,7 +220,9 @@ func newVulkanDevice(api driver.Vulkan) (driver.Device, error) {
 func (b *Backend) BeginFrame(target driver.RenderTarget, clear bool, viewport image.Point) driver.Texture {
 	b.staging.size = 0
 	b.cmdPool.used = 0
+	b.frames++
 	b.runDefers()
+	b.trimFreeImages()
 	b.resetPipes()
 
 	if target == nil {
@@ -204,6 +253,53 @@ func (b *Backend) BeginFrame(target driver.RenderTarget, clear bool, viewport im
 	default:
 		panic(fmt.Sprintf("vulkan: unsupported render target type: %T", t))
 	}
+}
+
+// trimFreeImages destroys the images let go that no texture took for
+// freeImageFrames frames.
+func (b *Backend) trimFreeImages() {
+	kept := b.freeImages[:0]
+	for _, f := range b.freeImages {
+		if b.frames-f.frame > freeImageFrames {
+			f.destroy(b.dev)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	clear(b.freeImages[len(kept):])
+	b.freeImages = kept
+}
+
+func (f freeImage) destroy(d vk.Device) {
+	if f.fbo != 0 {
+		vk.DestroyFramebuffer(d, f.fbo)
+	}
+	vk.DestroyImageView(d, f.view)
+	vk.DestroyImage(d, f.img)
+	vk.FreeMemory(d, f.mem)
+}
+
+// takeFreeImage takes an image let go that was made for key, the last one
+// let go first.
+func (b *Backend) takeFreeImage(key imageKey) (freeImage, bool) {
+	for i := len(b.freeImages) - 1; i >= 0; i-- {
+		if f := b.freeImages[i]; f.key == key {
+			b.freeImages = slices.Delete(b.freeImages, i, i+1)
+			return f, true
+		}
+	}
+	return freeImage{}, false
+}
+
+// keepFreeImage keeps the image of a texture let go, once the frames that
+// drew with it are done, destroying the oldest beyond maxFreeImages.
+func (b *Backend) keepFreeImage(f freeImage) {
+	f.frame = b.frames
+	if len(b.freeImages) == maxFreeImages {
+		b.freeImages[0].destroy(b.dev)
+		b.freeImages = slices.Delete(b.freeImages, 0, 1)
+	}
+	b.freeImages = append(b.freeImages, f)
 }
 
 func (b *Backend) deferFunc(f func(d vk.Device)) {
@@ -275,6 +371,12 @@ func (b *Backend) Release() {
 		buf.Release()
 	}
 	b.runDefers()
+	for _, f := range b.freeImages {
+		f.destroy(b.dev)
+	}
+	for _, s := range b.samplers {
+		vk.DestroySampler(b.dev, s)
+	}
 	for _, rp := range b.passes {
 		vk.DestroyRenderPass(b.dev, rp)
 	}
@@ -319,23 +421,26 @@ func (b *Backend) NewTexture(format driver.TextureFormat, width, height int, min
 		log2 := 32 - bits.LeadingZeros32(uint32(dim)) - 1
 		nmipmaps = log2 + 1
 	}
-	sampler, err := vk.CreateSampler(b.dev, filterFor(minFilter), filterFor(magFilter), mipmapMode)
+	sampler, err := b.sampler(samplerKey{min: filterFor(minFilter), mag: filterFor(magFilter), mipmapMode: mipmapMode})
 	if err != nil {
 		return nil, mapErr(err)
 	}
+	key := imageKey{format: vkfmt, width: width, height: height, mipmaps: nmipmaps, usage: usage, framebuffer: bindings&driver.BufferBindingFramebuffer != 0}
+	if f, ok := b.takeFreeImage(key); ok {
+		// The image's contents are undefined, as a new one's.
+		return &Texture{backend: b, key: key, img: f.img, mem: f.mem, view: f.view, fbo: f.fbo, sampler: sampler, layout: vk.IMAGE_LAYOUT_UNDEFINED, passLayout: passLayout, width: width, height: height, format: vkfmt, mipmaps: nmipmaps}, nil
+	}
 	img, mem, err := vk.CreateImage(b.physDev, b.dev, vkfmt, width, height, nmipmaps, usage)
 	if err != nil {
-		vk.DestroySampler(b.dev, sampler)
 		return nil, mapErr(err)
 	}
 	view, err := vk.CreateImageView(b.dev, img, vkfmt)
 	if err != nil {
-		vk.DestroySampler(b.dev, sampler)
 		vk.DestroyImage(b.dev, img)
 		vk.FreeMemory(b.dev, mem)
 		return nil, mapErr(err)
 	}
-	t := &Texture{backend: b, img: img, mem: mem, view: view, sampler: sampler, layout: vk.IMAGE_LAYOUT_UNDEFINED, passLayout: passLayout, width: width, height: height, format: vkfmt, mipmaps: nmipmaps}
+	t := &Texture{backend: b, key: key, img: img, mem: mem, view: view, sampler: sampler, layout: vk.IMAGE_LAYOUT_UNDEFINED, passLayout: passLayout, width: width, height: height, format: vkfmt, mipmaps: nmipmaps}
 	if bindings&driver.BufferBindingFramebuffer != 0 {
 		pass, err := vk.CreateRenderPass(b.dev, vkfmt, vk.ATTACHMENT_LOAD_OP_DONT_CARE,
 			vk.IMAGE_LAYOUT_UNDEFINED, vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, nil)
@@ -350,6 +455,22 @@ func (b *Backend) NewTexture(format driver.TextureFormat, width, height int, min
 		t.fbo = fbo
 	}
 	return t, nil
+}
+
+// sampler returns the sampler of key, made the first time.
+func (b *Backend) sampler(key samplerKey) (vk.Sampler, error) {
+	if s, ok := b.samplers[key]; ok {
+		return s, nil
+	}
+	s, err := vk.CreateSampler(b.dev, key.min, key.mag, key.mipmapMode)
+	if err != nil {
+		return 0, err
+	}
+	if b.samplers == nil {
+		b.samplers = make(map[samplerKey]vk.Sampler)
+	}
+	b.samplers[key] = s
+	return s, nil
 }
 
 func (b *Backend) NewBuffer(bindings driver.BufferBinding, size int) (driver.Buffer, error) {
@@ -595,13 +716,12 @@ func (b *Backend) CopyTexture(dstTex driver.Texture, dorig image.Point, srcFBO d
 		vk.PIPELINE_STAGE_TRANSFER_BIT,
 		vk.ACCESS_TRANSFER_WRITE_BIT,
 	)
-	vk.CmdCopyImage(cmdBuf, src.img, src.layout, dst.img, dst.layout, []vk.ImageCopy{op})
+	vk.CmdCopyImage(cmdBuf, src.img, src.layout, dst.img, dst.layout, op)
 }
 
 func (b *Backend) Viewport(x, y, width, height int) {
 	cmdBuf := b.currentCmdBuf()
-	vp := vk.BuildViewport(float32(x), float32(y), float32(width), float32(height))
-	vk.CmdSetViewport(cmdBuf, 0, vp)
+	vk.CmdSetViewport(cmdBuf, vk.BuildViewport(float32(x), float32(y), float32(width), float32(height)))
 }
 
 func (b *Backend) DrawArrays(off, count int) {
@@ -682,10 +802,10 @@ func (t *Texture) Upload(offset, size image.Point, pixels []byte, stride int) {
 			vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			i-1, 1,
 		)
-		vk.CmdPipelineBarrier(cmdBuf, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.DEPENDENCY_BY_REGION_BIT, nil, nil, []vk.ImageMemoryBarrier{b})
+		vk.CmdImageBarrier(cmdBuf, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.DEPENDENCY_BY_REGION_BIT, b)
 		// Blit to this mipmap level.
 		blit := vk.BuildImageBlit(0, 0, 0, 0, w, h, nw, nh, i-1, i)
-		vk.CmdBlitImage(cmdBuf, t.img, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.img, vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, []vk.ImageBlit{blit}, vk.FILTER_LINEAR)
+		vk.CmdBlitImage(cmdBuf, t.img, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.img, vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit, vk.FILTER_LINEAR)
 		w, h = nw, nh
 	}
 	if t.mipmaps > 1 {
@@ -696,7 +816,7 @@ func (t *Texture) Upload(offset, size image.Point, pixels []byte, stride int) {
 			vk.IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			t.mipmaps-1, 1,
 		)
-		vk.CmdPipelineBarrier(cmdBuf, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.DEPENDENCY_BY_REGION_BIT, nil, nil, []vk.ImageMemoryBarrier{b})
+		vk.CmdImageBarrier(cmdBuf, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.PIPELINE_STAGE_TRANSFER_BIT, vk.DEPENDENCY_BY_REGION_BIT, b)
 		t.layout = vk.IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
 	}
 }
@@ -705,15 +825,11 @@ func (t *Texture) Release() {
 	if t.foreign {
 		panic("external textures cannot be released")
 	}
-	freet := *t
-	t.backend.deferFunc(func(d vk.Device) {
-		if freet.fbo != 0 {
-			vk.DestroyFramebuffer(d, freet.fbo)
-		}
-		vk.DestroySampler(d, freet.sampler)
-		vk.DestroyImageView(d, freet.view)
-		vk.DestroyImage(d, freet.img)
-		vk.FreeMemory(d, freet.mem)
+	b := t.backend
+	f := freeImage{key: t.key, img: t.img, mem: t.mem, view: t.view, fbo: t.fbo}
+	// The sampler is the backend's, shared.
+	b.deferFunc(func(d vk.Device) {
+		b.keepFreeImage(f)
 	})
 	*t = Texture{}
 }
@@ -779,20 +895,17 @@ func (p *descPool) bindDescriptorSet(b *Backend, cmdBuf vk.CommandBuffer, bindPo
 	p.size++
 	for _, bind := range p.texBinds {
 		tex := texBinds[bind]
-		write := vk.BuildWriteDescriptorSetImage(descSet, bind, vk.DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex.sampler, tex.view, vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-		vk.UpdateDescriptorSet(b.dev, write)
+		vk.UpdateDescriptorSetImage(b.dev, descSet, bind, vk.DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex.sampler, tex.view, vk.IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 	}
 	for _, bind := range p.imgBinds {
 		tex := texBinds[bind]
-		write := vk.BuildWriteDescriptorSetImage(descSet, bind, vk.DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, tex.view, vk.IMAGE_LAYOUT_GENERAL)
-		vk.UpdateDescriptorSet(b.dev, write)
+		vk.UpdateDescriptorSetImage(b.dev, descSet, bind, vk.DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, tex.view, vk.IMAGE_LAYOUT_GENERAL)
 	}
 	for _, bind := range p.bufBinds {
 		buf := bufBinds[bind]
-		write := vk.BuildWriteDescriptorSetBuffer(descSet, bind, vk.DESCRIPTOR_TYPE_STORAGE_BUFFER, buf.buf)
-		vk.UpdateDescriptorSet(b.dev, write)
+		vk.UpdateDescriptorSetBuffer(b.dev, descSet, bind, vk.DESCRIPTOR_TYPE_STORAGE_BUFFER, buf.buf)
 	}
-	vk.CmdBindDescriptorSets(cmdBuf, bindPoint, p.layout, 0, []vk.DescriptorSet{descSet})
+	vk.CmdBindDescriptorSet(cmdBuf, bindPoint, p.layout, 0, descSet)
 }
 
 func (t *Texture) imageBarrier(cmdBuf vk.CommandBuffer, layout vk.ImageLayout, stage vk.PipelineStageFlags, access vk.AccessFlags) {
@@ -811,7 +924,7 @@ func (t *Texture) imageBarrier(cmdBuf vk.CommandBuffer, layout vk.ImageLayout, s
 		t.layout, layout,
 		0, vk.REMAINING_MIP_LEVELS,
 	)
-	vk.CmdPipelineBarrier(cmdBuf, srcStage, stage, vk.DEPENDENCY_BY_REGION_BIT, nil, nil, []vk.ImageMemoryBarrier{b})
+	vk.CmdImageBarrier(cmdBuf, srcStage, stage, vk.DEPENDENCY_BY_REGION_BIT, b)
 	t.layout = layout
 	t.scope.stage = stage
 	t.scope.access = access
@@ -954,7 +1067,7 @@ func (b *Buffer) barrier(cmdBuf vk.CommandBuffer, stage vk.PipelineStageFlags, a
 		b.buf,
 		b.scope.access, access,
 	)
-	vk.CmdPipelineBarrier(cmdBuf, srcStage, stage, vk.DEPENDENCY_BY_REGION_BIT, nil, []vk.BufferMemoryBarrier{barrier}, nil)
+	vk.CmdBufferBarrier(cmdBuf, srcStage, stage, vk.DEPENDENCY_BY_REGION_BIT, barrier)
 	b.scope.stage = stage
 	b.scope.access = access
 }
@@ -985,7 +1098,7 @@ func (t *Texture) ReadPixels(src image.Rectangle, pixels []byte, stride int) err
 		vk.PIPELINE_STAGE_TRANSFER_BIT,
 		vk.ACCESS_TRANSFER_READ_BIT,
 	)
-	vk.CmdCopyImageToBuffer(cmdBuf, t.img, t.layout, stage.buf, []vk.BufferImageCopy{region})
+	vk.CmdCopyImageToBuffer(cmdBuf, t.img, t.layout, stage.buf, region)
 	stage.scope.stage = vk.PIPELINE_STAGE_TRANSFER_BIT
 	stage.scope.access = vk.ACCESS_TRANSFER_WRITE_BIT
 	stage.barrier(cmdBuf,

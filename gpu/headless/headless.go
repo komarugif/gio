@@ -63,11 +63,17 @@ func NewWindow(width, height int) (*Window, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newWindow(ctx, width, height)
+}
+
+// newWindow makes a window drawn with ctx, which it releases where it
+// fails.
+func newWindow(ctx context, width, height int) (*Window, error) {
 	w := &Window{
 		size: image.Point{X: width, Y: height},
 		ctx:  ctx,
 	}
-	err = contextDo(ctx, func() error {
+	err := contextDo(ctx, func() error {
 		dev, err := driver.NewDevice(ctx.API())
 		if err != nil {
 			return err
