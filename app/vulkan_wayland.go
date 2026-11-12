@@ -5,6 +5,7 @@
 package app
 
 import (
+	"fmt"
 	"sync"
 	"unsafe"
 
@@ -97,6 +98,34 @@ func waylandVulkanInstance() (vk.Instance, VulkanDevice, error) {
 // loaded alone; of every driver together, with no driver named, where the
 // loader cannot load one alone.
 func waylandVulkanDevices() ([]VulkanDevice, error) {
+	return collectVulkanDevices(vk.Drivers(), func(d vk.Driver) ([]vk.PhysicalDeviceInfo, bool, error) {
+		inst, err := vk.CreateInstanceFor(d)
+		if err != nil {
+			// A manifest of another architecture, or a loader that cannot
+			// load a driver alone.
+			return nil, false, nil
+		}
+		defer vk.DestroyInstance(inst)
+		infos, err := vk.PhysicalDevices(inst)
+		return infos, true, err
+	}, func() ([]vk.PhysicalDeviceInfo, error) {
+		inst, err := vk.CreateInstance()
+		if err != nil {
+			return nil, err
+		}
+		defer vk.DestroyInstance(inst)
+		return vk.PhysicalDevices(inst)
+	})
+}
+
+// collectVulkanDevices lists the devices of drivers, those of each from
+// alone, which tells whether the driver loaded alone; those of every driver
+// from together where none did. A driver that loads and fails to list its
+// devices is left out, as the loader leaves it out of an instance of every
+// driver: drivers of hardware that is not there fail so, as
+// VK_ERROR_INITIALIZATION_FAILED. Its error is told only where no driver
+// had a device. Devices that draw on the CPU are left out.
+func collectVulkanDevices(drivers []vk.Driver, alone func(vk.Driver) ([]vk.PhysicalDeviceInfo, bool, error), together func() ([]vk.PhysicalDeviceInfo, error)) ([]VulkanDevice, error) {
 	var devices []VulkanDevice
 	add := func(driver string, infos []vk.PhysicalDeviceInfo) {
 		for _, i := range infos {
@@ -114,35 +143,32 @@ func waylandVulkanDevices() ([]VulkanDevice, error) {
 			})
 		}
 	}
-	alone := false
-	for _, d := range vk.Drivers() {
-		inst, err := vk.CreateInstanceFor(d)
-		if err != nil {
-			// A manifest of another architecture, or a loader that cannot
-			// load a driver alone.
+	loaded := false
+	var firstErr error
+	for _, d := range drivers {
+		infos, ok, err := alone(d)
+		if !ok {
 			continue
 		}
-		alone = true
-		infos, err := vk.PhysicalDevices(inst)
-		vk.DestroyInstance(inst)
+		loaded = true
 		if err != nil {
-			return nil, err
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", d.Manifest, err)
+			}
+			continue
 		}
 		add(d.Manifest, infos)
 	}
-	if alone {
-		return devices, nil
+	if !loaded {
+		infos, err := together()
+		if err != nil {
+			return nil, err
+		}
+		add("", infos)
 	}
-	inst, err := vk.CreateInstance()
-	if err != nil {
-		return nil, err
+	if len(devices) == 0 && firstErr != nil {
+		return nil, firstErr
 	}
-	defer vk.DestroyInstance(inst)
-	infos, err := vk.PhysicalDevices(inst)
-	if err != nil {
-		return nil, err
-	}
-	add("", infos)
 	return devices, nil
 }
 

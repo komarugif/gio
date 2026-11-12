@@ -744,6 +744,11 @@ Run the focused check from the project root:
     finding no manifest, a driver loaded alone still has its devices).
   - `app.VulkanDevices` lists the devices of each driver, loaded alone,
     leaving out those that draw on the CPU: it wakes every GPU up, and is
-    for the program to call when the devices are to be shown.
+    for the program to call when the devices are to be shown. A driver
+    that loads and fails to list its devices is left out, as the loader
+    leaves it out of an instance of every driver: on a laptop with Intel
+    and NVIDIA one failed with `VK_ERROR_INITIALIZATION_FAILED` and took
+    the whole list with it. Its error, with its manifest, is told only
+    where no driver has a device. `TestCollectVulkanDevices`.
   Checked on Linux with lavapipe, which windows are not drawn with: the
   window on Vulkan with a chosen device on a laptop is not checked yet.
