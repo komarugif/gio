@@ -12,8 +12,8 @@ import (
 type GraphicsAPI uint8
 
 const (
-	// GraphicsAuto leaves the API to Gio: OpenGL, Vulkan where OpenGL
-	// fails.
+	// GraphicsAuto leaves the API to Gio: Vulkan, OpenGL where Vulkan
+	// fails or has failed (Graphics.VulkanFailed).
 	GraphicsAuto GraphicsAPI = iota
 	// GraphicsOpenGL draws with OpenGL, Vulkan where OpenGL fails.
 	GraphicsOpenGL

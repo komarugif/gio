@@ -196,6 +196,14 @@ func TestWaylandVulkanFailed(t *testing.T) {
 	if made != 2 {
 		t.Fatal("Vulkan chosen again was not tried")
 	}
+	// The automatic choice tries Vulkan first, once.
+	SetGraphics(Graphics{})
+	for range 3 {
+		(*window)(nil).NewContext()
+	}
+	if made != 3 {
+		t.Fatalf("with the automatic choice, Vulkan was tried %d times", made-2)
+	}
 }
 
 // The kernel's driver of the compositor's device names the Vulkan drivers
@@ -321,7 +329,8 @@ func TestWaylandHeadless(t *testing.T) {
 		info string
 		want gpuchoice.API
 	}{
-		{Graphics{}, "", gpuchoice.OpenGL},
+		{Graphics{}, "", gpuchoice.Vulkan},
+		{Graphics{API: GraphicsOpenGL}, "", gpuchoice.OpenGL},
 		{Graphics{API: GraphicsVulkan}, "", gpuchoice.Vulkan},
 		{Graphics{API: GraphicsVulkan, VulkanFailed: true}, "", gpuchoice.OpenGL},
 		{Graphics{API: GraphicsVulkan}, "OpenGL ES 3.2", gpuchoice.OpenGL},

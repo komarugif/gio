@@ -10,7 +10,7 @@ import (
 )
 
 // Windows on Wayland try the API chosen first, and the other where it
-// fails.
+// fails; the automatic choice tries Vulkan first.
 func TestWaylandContexts(t *testing.T) {
 	egl, vulkan := newWaylandEGLContext, newWaylandVulkanContext
 	defer func() { newWaylandEGLContext, newWaylandVulkanContext = egl, vulkan }()
@@ -18,7 +18,7 @@ func TestWaylandContexts(t *testing.T) {
 	newWaylandEGLContext = func(*window) (context, error) { tried = append(tried, "egl"); return nil, errors.New("egl") }
 	newWaylandVulkanContext = func(*window) (context, error) { tried = append(tried, "vulkan"); return nil, errors.New("vulkan") }
 	for api, want := range map[GraphicsAPI]string{
-		GraphicsAuto:   "egl vulkan",
+		GraphicsAuto:   "vulkan egl",
 		GraphicsOpenGL: "egl vulkan",
 		GraphicsVulkan: "vulkan egl",
 	} {

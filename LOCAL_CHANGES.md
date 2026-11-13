@@ -768,7 +768,16 @@ Run the focused check from the project root:
   waited seconds for it to wake up, though the Intel one drew (1.6 s of
   the kernel in `vulkaninfo`, none with `VK_LOADER_DRIVERS_SELECT=*intel*`).
   - `waylandContexts` tries the chosen API first and the other where it
-    fails. `TestWaylandContexts`.
+    fails; the automatic choice, `GraphicsAuto`, tries Vulkan first
+    (`waylandVulkanFirst`), where upstream tried EGL. Measured on a laptop
+    (Intel ADL GT2, Mesa 26.1.6, KWin) after the changes to the Vulkan
+    backend below, Vulkan drew with as much CPU as OpenGL, and the process
+    took 140 MB less of mapped files (Mesa's OpenGL with LLVM): 159 MB of
+    RSS against 313 with one window, 554-565 against 690-700 with four;
+    each window's own VkDevice costs 4-5 MB more of anonymous memory.
+    Where Vulkan cannot draw, the first window falls back to EGL and
+    `Graphics.VulkanFailed` keeps the others from trying it. X11 stays on
+    EGL. `TestWaylandContexts`, `TestWaylandVulkanFailed`.
   - The windows on Wayland share an instance of Vulkan made with the
     device chosen (`acquireWaylandVulkan`); each had an instance of its
     own, which loaded every driver again. A window's device and swapchain

@@ -2114,8 +2114,8 @@ func (w *window) SetInputHint(_ key.InputHint) {}
 func (w *window) EditorStateChanged(old, new editorState) {}
 
 // waylandContexts lists the makers of contexts in the order they are
-// tried as g chose: EGL's first unless Vulkan is (waylandVulkanFirst), and
-// EGL's alone where Vulkan has failed.
+// tried as g chose: Vulkan's first unless OpenGL is chosen
+// (waylandVulkanFirst), and EGL's alone where Vulkan has failed.
 func waylandContexts(g Graphics) []func(*window) (context, error) {
 	if g.VulkanFailed {
 		return []func(*window) (context, error){newWaylandEGLContext}
@@ -2127,9 +2127,11 @@ func waylandContexts(g Graphics) []func(*window) (context, error) {
 }
 
 // waylandVulkanFirst reports whether windows on Wayland try Vulkan first
-// as g chose.
+// as g chose: unless OpenGL is chosen or Vulkan has failed. Vulkan draws
+// with less CPU than OpenGL there, and the process holds no OpenGL
+// drivers (Mesa's with LLVM, 140 MB of mapped files on a laptop).
 func waylandVulkanFirst(g Graphics) bool {
-	return g.API == GraphicsVulkan && !g.VulkanFailed
+	return g.API != GraphicsOpenGL && !g.VulkanFailed
 }
 
 func (w *window) NewContext() (context, error) {
