@@ -738,7 +738,9 @@ Run the focused check from the project root:
     image let go, with its memory, view and framebuffer, is kept once the
     frames that drew with it are done, for a texture of its format, size,
     mipmaps and usage made after it; one not taken for three frames is
-    destroyed, as is the oldest beyond sixteen. `TestTexturesReuseImages`;
+    destroyed, as are the oldest beyond 64 MB of them (a bound of sixteen
+    was passed by a list of GIFs, two dozen new frames a frame, which made
+    and freed memory as before: `TestManyTexturesReuseImages`). `TestTexturesReuseImages`;
     `BenchmarkDrawNewImages` (four new images a frame): 145 allocations a
     frame to 21. On lavapipe memory is malloc's, and the CPU it saves is
     to be measured on a GPU.

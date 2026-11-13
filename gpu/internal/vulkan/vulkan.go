@@ -75,8 +75,12 @@ type Backend struct {
 	// kept for a texture made after them in their format and size: making
 	// and freeing memory of the device for each frame of an animation took
 	// more CPU than drawing it. Those not taken for freeImageFrames frames,
-	// or beyond maxFreeImages, are destroyed.
+	// and the oldest beyond maxFreeBytes, are destroyed: a bound by count
+	// was passed by a list of GIFs, two dozen new frames a frame, which
+	// made and freed memory as before.
 	freeImages []freeImage
+	// freeBytes is the memory of freeImages.
+	freeBytes int
 	// frames counts the frames begun, for freeImages' ages.
 	frames int
 }
@@ -100,6 +104,18 @@ func (k imageKey) size() image.Point {
 	return image.Pt(k.width, k.height)
 }
 
+// bytes is about the memory of an image of k, its mipmaps a third more.
+func (k imageKey) bytes() int {
+	n := k.width * k.height * 4
+	if k.format == vk.FORMAT_R16_SFLOAT {
+		n = k.width * k.height * 2
+	}
+	if k.mipmaps > 1 {
+		n += n / 3
+	}
+	return n
+}
+
 type freeImage struct {
 	key   imageKey
 	img   vk.Image
@@ -111,7 +127,7 @@ type freeImage struct {
 
 const (
 	freeImageFrames = 3
-	maxFreeImages   = 16
+	maxFreeBytes    = 64 << 20
 )
 
 type boundState struct {
@@ -288,6 +304,7 @@ func (b *Backend) trimFreeImages() {
 	kept := b.freeImages[:0]
 	for _, f := range b.freeImages {
 		if b.frames-f.frame > freeImageFrames {
+			b.freeBytes -= f.key.bytes()
 			f.destroy(b.dev)
 			continue
 		}
@@ -312,6 +329,7 @@ func (b *Backend) takeFreeImage(key imageKey) (freeImage, bool) {
 	for i := len(b.freeImages) - 1; i >= 0; i-- {
 		if f := b.freeImages[i]; f.key == key {
 			b.freeImages = slices.Delete(b.freeImages, i, i+1)
+			b.freeBytes -= key.bytes()
 			return f, true
 		}
 	}
@@ -319,14 +337,22 @@ func (b *Backend) takeFreeImage(key imageKey) (freeImage, bool) {
 }
 
 // keepFreeImage keeps the image of a texture let go, once the frames that
-// drew with it are done, destroying the oldest beyond maxFreeImages.
+// drew with it are done, destroying the oldest beyond maxFreeBytes; one
+// larger than that alone is destroyed.
 func (b *Backend) keepFreeImage(f freeImage) {
+	n := f.key.bytes()
+	if n > maxFreeBytes {
+		f.destroy(b.dev)
+		return
+	}
 	f.frame = b.frames
-	if len(b.freeImages) == maxFreeImages {
+	for len(b.freeImages) > 0 && b.freeBytes+n > maxFreeBytes {
+		b.freeBytes -= b.freeImages[0].key.bytes()
 		b.freeImages[0].destroy(b.dev)
 		b.freeImages = slices.Delete(b.freeImages, 0, 1)
 	}
 	b.freeImages = append(b.freeImages, f)
+	b.freeBytes += n
 }
 
 func (b *Backend) deferFunc(f func(d vk.Device)) {

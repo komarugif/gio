@@ -5,6 +5,7 @@
 package vulkan
 
 import (
+	"image"
 	"testing"
 	"unsafe"
 
@@ -83,7 +84,7 @@ func TestTexturesReuseImages(t *testing.T) {
 	for range freeImageFrames + 2 {
 		b.BeginFrame(nil, false, size)
 	}
-	if len(b.freeImages) != 0 {
+	if b.freeBytes != 0 || len(b.freeImages) != 0 {
 		t.Fatalf("%d images let go kept after %d frames", len(b.freeImages), freeImageFrames+1)
 	}
 }
@@ -176,4 +177,39 @@ func TestDrawsBindOnce(t *testing.T) {
 		t.Errorf("a new command buffer has %+v bound", b.bound)
 	}
 	b.EndFrame()
+}
+
+// The images let go are kept by their memory, not their count: a list of
+// GIFs lets two dozen frames go every frame, and each was made anew with
+// a bound of sixteen.
+func TestManyTexturesReuseImages(t *testing.T) {
+	b := newTestBackend(t)
+	const n = 32
+	newTex := func() *Texture {
+		t.Helper()
+		tex, err := b.NewTexture(driver.TextureFormatSRGBA, 128, 96, driver.FilterLinear, driver.FilterLinear, driver.BufferBindingTexture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tex.(*Texture)
+	}
+	var texs []*Texture
+	for range n {
+		texs = append(texs, newTex())
+	}
+	for _, tex := range texs {
+		tex.Release()
+	}
+	b.BeginFrame(nil, false, image.Pt(128, 96))
+	// A driver gives a new image the handle of one destroyed: the images
+	// kept tell what is taken.
+	if len(b.freeImages) != n {
+		t.Fatalf("%d of %d images let go kept", len(b.freeImages), n)
+	}
+	for range n {
+		newTex()
+	}
+	if b.freeBytes != 0 || len(b.freeImages) != 0 {
+		t.Fatalf("%d images of %d bytes kept, all taken", len(b.freeImages), b.freeBytes)
+	}
 }
