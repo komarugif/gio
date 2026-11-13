@@ -853,6 +853,21 @@ Run the focused check from the project root:
     where no driver has a device. `TestCollectVulkanDevices`.
   Checked on Linux with lavapipe, which windows are not drawn with: the
   window on Vulkan with a chosen device on a laptop is not checked yet.
+- `gpu/headless`, `internal/gpuchoice`, `app/vulkan_wayland.go`: a
+  headless window is drawn as the program's windows are. It tried EGL
+  first, and on Vulkan made an instance of its own with every driver: with
+  windows drawn by Vulkan the process held OpenGL's drivers as well, and a
+  headless window on Vulkan woke every GPU. `internal/gpuchoice` holds two
+  hooks app sets on Wayland: `Prefer`, the API of the GPU made last for a
+  window (or the one windows try first before any is), which
+  `headless.NewWindow` tries first; and `VulkanInstance`, the instance the
+  windows share (`acquireWaylandVulkan`, made with a driver alone where it
+  can be), held for the headless window until it is released, with the
+  ids of the device the windows draw with. Without app, on X11 and in
+  builds without Vulkan nothing changes. `TestHeadlessFollowsWindows`,
+  `TestWaylandHeadless`. Checked on Linux with windows on EGL (a
+  snapshot of messages draws as before); a headless window beside windows
+  on Vulkan is checked by tests only.
 - `app.ResetGPUs` (`app/window.go`, `app/graphics.go`): every window that
   has a GPU drops it, with its context, and makes it anew in its next
   frame, as `SetGraphics` set: the messenger applies another graphics API

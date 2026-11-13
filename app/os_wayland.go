@@ -2114,16 +2114,22 @@ func (w *window) SetInputHint(_ key.InputHint) {}
 func (w *window) EditorStateChanged(old, new editorState) {}
 
 // waylandContexts lists the makers of contexts in the order they are
-// tried as g chose: EGL's first unless Vulkan is chosen, and EGL's alone
-// where Vulkan has failed.
+// tried as g chose: EGL's first unless Vulkan is (waylandVulkanFirst), and
+// EGL's alone where Vulkan has failed.
 func waylandContexts(g Graphics) []func(*window) (context, error) {
 	if g.VulkanFailed {
 		return []func(*window) (context, error){newWaylandEGLContext}
 	}
-	if g.API == GraphicsVulkan {
+	if waylandVulkanFirst(g) {
 		return []func(*window) (context, error){newWaylandVulkanContext, newWaylandEGLContext}
 	}
 	return []func(*window) (context, error){newWaylandEGLContext, newWaylandVulkanContext}
+}
+
+// waylandVulkanFirst reports whether windows on Wayland try Vulkan first
+// as g chose.
+func waylandVulkanFirst(g Graphics) bool {
+	return g.API == GraphicsVulkan && !g.VulkanFailed
 }
 
 func (w *window) NewContext() (context, error) {

@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"gioui.org/gpu"
+	"gioui.org/internal/gpuchoice"
 	"gioui.org/internal/vk"
 )
 
@@ -16,25 +17,47 @@ type vkContext struct {
 	inst     vk.Instance
 	dev      vk.Device
 	queueFam int
+	// release lets the instance of the program's windows go; the
+	// context's own instance is destroyed where it is nil.
+	release func()
 }
 
 func init() {
 	newContextFallback = newVulkanContext
+	newContextVulkan = newVulkanContext
 }
 
+// newVulkanContext makes a context of the instance and the device the
+// program's windows are drawn with, where they tell them
+// (gpuchoice.VulkanInstance); of an instance of its own, with every
+// driver, otherwise.
 func newVulkanContext() (context, error) {
-	inst, err := vk.CreateInstance()
-	if err != nil {
-		return nil, err
+	var (
+		inst               vk.Instance
+		vendorID, deviceID uint32
+		release            func()
+	)
+	if gpuchoice.VulkanInstance != nil {
+		if p, v, d, r, err := gpuchoice.VulkanInstance(); err == nil {
+			inst, vendorID, deviceID, release = vk.Instance(p), v, d, r
+		}
 	}
-	physDev, qFam, err := vk.ChoosePhysicalDevice(inst, 0)
+	if release == nil {
+		var err error
+		inst, err = vk.CreateInstance()
+		if err != nil {
+			return nil, err
+		}
+		release = func() { vk.DestroyInstance(inst) }
+	}
+	physDev, qFam, err := vk.ChoosePreferredPhysicalDevice(inst, 0, vendorID, deviceID)
 	if err != nil {
-		vk.DestroyInstance(inst)
+		release()
 		return nil, err
 	}
 	dev, err := vk.CreateDeviceAndQueue(physDev, qFam)
 	if err != nil {
-		vk.DestroyInstance(inst)
+		release()
 		return nil, err
 	}
 	ctx := &vkContext{
@@ -42,6 +65,7 @@ func newVulkanContext() (context, error) {
 		inst:     inst,
 		dev:      dev,
 		queueFam: qFam,
+		release:  release,
 	}
 	return ctx, nil
 }
@@ -67,6 +91,6 @@ func (c *vkContext) Release() {
 	vk.DeviceWaitIdle(c.dev)
 
 	vk.DestroyDevice(c.dev)
-	vk.DestroyInstance(c.inst)
+	c.release()
 	*c = vkContext{}
 }

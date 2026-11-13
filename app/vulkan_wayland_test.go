@@ -10,6 +10,8 @@ import (
 	"testing"
 	"unsafe"
 
+	"gioui.org/gpu"
+	"gioui.org/internal/gpuchoice"
 	"gioui.org/internal/vk"
 )
 
@@ -279,4 +281,81 @@ func TestWaylandVulkanCompositorDriver(t *testing.T) {
 	if len(made) != 2 {
 		t.Fatalf("instances made: %+v", made)
 	}
+}
+
+// Headless windows are told the API windows on Wayland are drawn with,
+// and are given the instance they share, held like a window's, with the
+// device windows draw with.
+func TestWaylandHeadless(t *testing.T) {
+	defer SetGraphics(Graphics{})
+	defer func(m func(vulkanWant) (vk.Instance, string, error), d func(vk.Instance), info *gpu.DeviceInfo, wl bool) {
+		makeWaylandVulkan, destroyWaylandVulkan = m, d
+		waylandVulkan.current, waylandVulkan.failed, waylandVulkan.compositorFailed = nil, nil, false
+		gpuInfo.Store(info)
+		waylandWindows.Store(wl)
+	}(makeWaylandVulkan, destroyWaylandVulkan, gpuInfo.Load(), waylandWindows.Load())
+	waylandVulkan.current, waylandVulkan.failed, waylandVulkan.compositorFailed = nil, nil, false
+	var fakes []*byte
+	made := 0
+	makeWaylandVulkan = func(w vulkanWant) (vk.Instance, string, error) {
+		made++
+		fakes = append(fakes, new(byte))
+		return vk.Instance(unsafe.Pointer(fakes[len(fakes)-1])), "intel_icd.x86_64.json", nil
+	}
+	destroyWaylandVulkan = func(vk.Instance) {}
+	gpuInfo.Store(nil)
+	if gpuchoice.Prefer == nil || gpuchoice.VulkanInstance == nil {
+		t.Fatal("headless windows are not told what windows are drawn with")
+	}
+
+	waylandWindows.Store(false)
+	if api := waylandHeadlessAPI(); api != gpuchoice.Unknown {
+		t.Errorf("with no window on Wayland, headless windows are told %d", api)
+	}
+	if _, _, _, _, err := waylandHeadlessVulkan(); err == nil || made != 0 {
+		t.Error("with no window on Wayland, headless windows were given an instance")
+	}
+	waylandWindows.Store(true)
+	for _, c := range []struct {
+		g    Graphics
+		info string
+		want gpuchoice.API
+	}{
+		{Graphics{}, "", gpuchoice.OpenGL},
+		{Graphics{API: GraphicsVulkan}, "", gpuchoice.Vulkan},
+		{Graphics{API: GraphicsVulkan, VulkanFailed: true}, "", gpuchoice.OpenGL},
+		{Graphics{API: GraphicsVulkan}, "OpenGL ES 3.2", gpuchoice.OpenGL},
+		{Graphics{}, "Vulkan 1.4.354", gpuchoice.Vulkan},
+	} {
+		SetGraphics(c.g)
+		gpuInfo.Store(&gpu.DeviceInfo{API: c.info})
+		if c.info == "" {
+			gpuInfo.Store(nil)
+		}
+		if got := waylandHeadlessAPI(); got != c.want {
+			t.Errorf("%+v drawn with %q: headless windows told %d, want %d", c.g, c.info, got, c.want)
+		}
+	}
+
+	SetGraphics(Graphics{})
+	gpuInfo.Store(&gpu.DeviceInfo{API: "Vulkan 1.4.354", VendorID: 0x8086, DeviceID: 0x4626})
+	w, _, err := acquireWaylandVulkan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, vendorID, deviceID, release, err := waylandHeadlessVulkan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vk.Instance(inst) != w.inst || made != 1 || w.windows != 2 {
+		t.Fatalf("a headless window took another instance, or did not hold it: %d made, %d holding", made, w.windows)
+	}
+	if vendorID != 0x8086 || deviceID != 0x4626 {
+		t.Errorf("a headless window was given device %x:%x", vendorID, deviceID)
+	}
+	release()
+	if w.windows != 1 {
+		t.Fatalf("a headless window let go, %d holding", w.windows)
+	}
+	releaseWaylandVulkan(w)
 }

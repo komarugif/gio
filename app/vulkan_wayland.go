@@ -5,6 +5,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"gioui.org/gpu"
+	"gioui.org/internal/gpuchoice"
 	"gioui.org/internal/vk"
 )
 
@@ -117,6 +119,8 @@ func init() {
 		return c, nil
 	}
 	listVulkanDevices = waylandVulkanDevices
+	gpuchoice.Prefer = waylandHeadlessAPI
+	gpuchoice.VulkanInstance = waylandHeadlessVulkan
 	currentVulkanDriver = func() string {
 		waylandVulkan.Lock()
 		defer waylandVulkan.Unlock()
@@ -125,6 +129,43 @@ func init() {
 		}
 		return ""
 	}
+}
+
+// waylandHeadlessAPI tells headless windows the API windows on Wayland
+// are drawn with: that of the GPU made last for a window, or the one
+// windows try first before any is made.
+func waylandHeadlessAPI() gpuchoice.API {
+	if !waylandWindows.Load() {
+		return gpuchoice.Unknown
+	}
+	if api := GPUInfo().API; api != "" {
+		if strings.HasPrefix(api, "Vulkan") {
+			return gpuchoice.Vulkan
+		}
+		return gpuchoice.OpenGL
+	}
+	if waylandVulkanFirst(CurrentGraphics()) {
+		return gpuchoice.Vulkan
+	}
+	return gpuchoice.OpenGL
+}
+
+// waylandHeadlessVulkan gives a headless window the instance windows on
+// Wayland share (acquireWaylandVulkan), made with a driver alone where it
+// can be, and the device they are drawn with.
+func waylandHeadlessVulkan() (unsafe.Pointer, uint32, uint32, func(), error) {
+	if !waylandWindows.Load() {
+		return nil, 0, 0, nil, errors.New("app: no windows on Wayland")
+	}
+	shared, want, err := acquireWaylandVulkan()
+	if err != nil {
+		return nil, 0, 0, nil, err
+	}
+	vendorID, deviceID := want.device.VendorID, want.device.DeviceID
+	if info := GPUInfo(); strings.HasPrefix(info.API, "Vulkan") {
+		vendorID, deviceID = info.VendorID, info.DeviceID
+	}
+	return unsafe.Pointer(shared.inst), vendorID, deviceID, func() { releaseWaylandVulkan(shared) }, nil
 }
 
 // acquireWaylandVulkan returns the instance for a window to draw with,

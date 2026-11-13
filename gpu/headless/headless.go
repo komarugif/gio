@@ -11,6 +11,7 @@ import (
 
 	"gioui.org/gpu"
 	"gioui.org/gpu/internal/driver"
+	"gioui.org/internal/gpuchoice"
 	"gioui.org/op"
 )
 
@@ -33,10 +34,18 @@ type context interface {
 var (
 	newContextPrimary  func() (context, error)
 	newContextFallback func() (context, error)
+	// newContextVulkan is Vulkan's, where it is the fallback.
+	newContextVulkan func() (context, error)
 )
 
+// newContext makes a context of the API the program's windows are drawn
+// with first, where it tells it (gpuchoice.Prefer); of EGL first
+// otherwise, where there is a choice.
 func newContext() (context, error) {
 	funcs := []func() (context, error){newContextPrimary, newContextFallback}
+	if gpuchoice.Prefer != nil && gpuchoice.Prefer() == gpuchoice.Vulkan && newContextVulkan != nil {
+		funcs = []func() (context, error){newContextVulkan, newContextPrimary}
+	}
 	var firstErr error
 	for _, f := range funcs {
 		if f == nil {
