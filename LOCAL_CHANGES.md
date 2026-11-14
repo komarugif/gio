@@ -503,6 +503,38 @@ Run the focused check from the project root:
     arguments the roster gave in a `B_ARGV_RECEIVED` message
     (`gh_launch_args`, `GH_ABI` 5), as it does to a program it starts for a
     click on a notification.
+  - `HaikuPlaceEvent` and `HaikuDesktopEvent` (`GH_ABI` 6): where the
+    window's content is on the screen, at each move (`BWindow::FrameMoved`,
+    `GH_EV_MOVE`) and once after `HaikuViewEvent`; and what the desktop
+    shows behind the windows (`gh_window_desktop`): the screen's size, the
+    desktop's color and the wallpaper of the current workspace, its file
+    and how Tracker places it, read from the `be:bgndimginfo` attribute of
+    the desktop's directory. It is sent once after `HaikuViewEvent`, and
+    when the attribute changes (a node monitor of the window), another
+    workspace is switched to or the screen changes (`GH_EV_DESKTOP`). The
+    app_server has no blur and shows nothing through a window: KomaruGram
+    draws the blurred wallpaper behind its window by these. `app/window.go`
+    gives the program such events of a driver as they are (`passedEvent`),
+    the last of each kind one after another; an event it did not know made
+    it panic. Checked on Haiku R1/beta6: the events come at the start and
+    at a move by `hey`; a change of the wallpaper and of the workspace is
+    not checked.
+  - A window without the system's frame (`Decorated(false)`,
+    `B_NO_BORDER_WINDOW_LOOK`) can be moved and resized (`GH_ABI` 7), for a
+    program that draws its own frame: a press on what the program made an
+    area of `system.ActionMove` has the window follow the pointer until the
+    release (`gh_window_start_move`, the view's `MouseMoved`), and a double
+    click there zooms it or puts it back; the right and the bottom edges,
+    5 pixels, and the corner between them resize it within its limits,
+    with the cursors of it. The press and the release of such a drag are
+    not given to the program. Leaving fullscreen gave every window the
+    system's frame; it keeps the one it had. Taking the system's frame off
+    a window, or giving it back, keeps the window where the user sees it:
+    a `BWindow` is its content, with the tab and the border around it, so
+    the look alone made the window smaller by them, and with them again
+    larger. The content takes the place of the frame
+    (`BWindow::DecoratorFrame`) when it goes, and gives it back when it
+    comes.
   - `app/gl_haiku.go`: OpenGL 3.3 core through OSMesa into memory, drawn
     into an `SRGB8_ALPHA8` texture and blitted to OSMesa's linear
     framebuffer undecoded; the context is `Shared` and keeps a vertex array

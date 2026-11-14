@@ -30,11 +30,12 @@ static void *gh_lib;
 	X(void, gh_window_destroy, (void *a), (a)) \
 	X(int32_t, gh_window_next_event, (void *a, gh_event *b, int64_t c), (a, b, c)) \
 	X(void, gh_window_wake, (void *a), (a)) \
-	X(void, gh_window_size, (void *a, int32_t *b, int32_t *c), (a, b, c)) \
+	X(void, gh_window_size, (void *a, int32_t *b, int32_t *c), (a, b, c)) 	X(void, gh_window_origin, (void *a, int32_t *b, int32_t *c), (a, b, c)) 	X(void, gh_window_desktop, (void *a, gh_desktop *b), (a, b)) \
 	X(void, gh_window_set_title, (void *a, const char *b), (a, b)) \
 	X(void, gh_window_set_size, (void *a, int32_t b, int32_t c), (a, b, c)) \
 	X(void, gh_window_set_limits, (void *a, int32_t b, int32_t c, int32_t d, int32_t e), (a, b, c, d, e)) \
 	X(void, gh_window_set_decorated, (void *a, int32_t b), (a, b)) \
+	X(void, gh_window_start_move, (void *a), (a)) \
 	X(void, gh_window_set_mode, (void *a, int32_t b), (a, b)) \
 	X(void, gh_window_center, (void *a), (a)) \
 	X(void, gh_window_raise, (void *a), (a)) \
@@ -76,6 +77,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,6 +110,47 @@ func (HaikuViewEvent) ImplementsEvent()     {}
 func (h HaikuViewEvent) Valid() bool {
 	return h.Window != nil
 }
+
+// HaikuPlaceEvent is sent when the window's content is elsewhere on the
+// screen, and once after HaikuViewEvent.
+type HaikuPlaceEvent struct {
+	// Origin is the content's top left corner on the screen, in pixels.
+	Origin image.Point
+}
+
+func (HaikuPlaceEvent) ImplementsEvent()   {}
+func (HaikuPlaceEvent) passedKind() string { return "place" }
+
+// HaikuWallpaperMode is how Tracker places a wallpaper on the screen.
+type HaikuWallpaperMode int
+
+const (
+	// HaikuWallpaperAt is a wallpaper at its own size, at Offset.
+	HaikuWallpaperAt HaikuWallpaperMode = iota
+	HaikuWallpaperCentered
+	// HaikuWallpaperScaled is a wallpaper stretched over the screen.
+	HaikuWallpaperScaled
+	HaikuWallpaperTiled
+)
+
+// HaikuDesktopEvent is sent when what the desktop shows behind the windows
+// may be another: another wallpaper was set, another workspace was
+// switched to, or the screen has another size; and once after
+// HaikuViewEvent. A program that draws the desktop behind itself, where
+// nothing lets a window show it, draws this.
+type HaikuDesktopEvent struct {
+	// Screen is the size of the screen, in pixels.
+	Screen image.Point
+	// Wallpaper is the picture's file, empty when the desktop is of Color
+	// alone, placed by Mode; Color shows where the picture does not.
+	Wallpaper string
+	Mode      HaikuWallpaperMode
+	Offset    image.Point
+	Color     color.NRGBA
+}
+
+func (HaikuDesktopEvent) ImplementsEvent()   {}
+func (HaikuDesktopEvent) passedKind() string { return "desktop" }
 
 type haikuWindow struct {
 	w   *callbacks
@@ -267,6 +310,10 @@ func newHaikuWindow(gioWin *callbacks, options []Option) error {
 	C.pgh_window_show(w.win)
 	w.w.SetDriver(w)
 	w.ProcessEvent(HaikuViewEvent{Window: w.win})
+	var x, y C.int32_t
+	C.pgh_window_origin(w.win, &x, &y)
+	w.ProcessEvent(HaikuPlaceEvent{Origin: image.Pt(int(x), int(y))})
+	w.desktop()
 	return nil
 }
 
@@ -413,8 +460,25 @@ func (w *haikuWindow) handle(ev *C.gh_event) (redraw, done bool) {
 		}
 	case C.GH_EV_DROP:
 		w.drop(ev)
+	case C.GH_EV_MOVE:
+		w.ProcessEvent(HaikuPlaceEvent{Origin: image.Pt(int(ev.x), int(ev.y))})
+	case C.GH_EV_DESKTOP:
+		w.desktop()
 	}
 	return redraw, false
+}
+
+// desktop tells the program what the desktop shows behind the windows.
+func (w *haikuWindow) desktop() {
+	var d C.gh_desktop
+	C.pgh_window_desktop(w.win, &d)
+	w.ProcessEvent(HaikuDesktopEvent{
+		Screen:    image.Pt(int(d.width), int(d.height)),
+		Wallpaper: C.GoString(&d.path[0]),
+		Mode:      HaikuWallpaperMode(d.mode),
+		Offset:    image.Pt(int(d.x), int(d.y)),
+		Color:     color.NRGBA{R: uint8(d.red), G: uint8(d.green), B: uint8(d.blue), A: 0xff},
+	})
 }
 
 // drop tells of files dragged over the window, as Tracker drags them: a
@@ -508,6 +572,23 @@ func (w *haikuWindow) pointer(ev *C.gh_event) {
 			} else if released != 0 {
 				e.Kind = pointer.Release
 			}
+		}
+	}
+	if e.Kind == pointer.Press && e.Buttons == pointer.ButtonPrimary && !w.config.Decorated && w.config.Mode != Fullscreen {
+		// A window without the system's frame is moved by what the
+		// program draws for it, and zoomed by a double click there, as
+		// the system's tab does both.
+		if a, ok := w.w.ActionAt(e.Position); ok && a == system.ActionMove {
+			if ev.clicks >= 2 {
+				mode := C.int32_t(C.GH_MODE_MAXIMIZED)
+				if w.config.Mode == Maximized {
+					mode = C.GH_MODE_WINDOWED
+				}
+				C.pgh_window_set_mode(w.win, mode)
+			} else {
+				C.pgh_window_start_move(w.win)
+			}
+			return
 		}
 	}
 	w.pointerBtns = e.Buttons

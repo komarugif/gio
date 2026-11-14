@@ -8,6 +8,9 @@
 #include <Clipboard.h>
 #include <Deskbar.h>
 #include <File.h>
+#include <FindDirectory.h>
+#include <Node.h>
+#include <NodeMonitor.h>
 #include <Cursor.h>
 #include <Font.h>
 #include <Bitmap.h>
@@ -24,9 +27,11 @@
 #include <image.h>
 #include <Window.h>
 
+#include <algorithm>
 #include <deque>
 #include <string>
 #include <fcntl.h>
+#include <fs_attr.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -173,6 +178,14 @@ public:
 			Window()->Activate();
 		MakeFocus(true);
 		SetMouseEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
+		if (int edges = EdgesAt(where)) {
+			// The edge of a window without the system's frame resizes it.
+			fDrag = kDragResize;
+			fDragEdges = edges;
+			fDragFrom = ScreenWhere(where);
+			fDragFrame = Window()->Frame();
+			return;
+		}
 		gh_event ev = PointerEvent(GH_EV_MOUSE_DOWN, where);
 		int32 clicks = 1;
 		if (BMessage *msg = Window()->CurrentMessage())
@@ -182,10 +195,59 @@ public:
 	}
 
 	void MouseUp(BPoint where) override {
+		if (fDrag != kDragNone) {
+			// The press was the window's, and so is its release.
+			fDrag = kDragNone;
+			return;
+		}
 		fQueue->Push(PointerEvent(GH_EV_MOUSE_UP, where));
 	}
 
+	// BeginMove has the window follow the pointer until its button is
+	// released. The window is locked.
+	void BeginMove() {
+		// By the pointer's last event, not by where it is now: the press
+		// that asked for the move was handled in another thread since.
+		if (fButtons == 0)
+			return;
+		fDrag = kDragMove;
+		fDragFrom = fLastScreen;
+		fDragFrame = Window()->Frame();
+	}
+
 	void MouseMoved(BPoint where, uint32 transit, const BMessage *drag) override {
+		if (fDrag != kDragNone) {
+			BPoint by = ScreenWhere(where) - fDragFrom;
+			if (fDrag == kDragMove) {
+				Window()->MoveTo(fDragFrame.LeftTop() + by);
+				return;
+			}
+			float minWidth, maxWidth, minHeight, maxHeight;
+			Window()->GetSizeLimits(&minWidth, &maxWidth, &minHeight, &maxHeight);
+			float width = fDragFrame.Width(), height = fDragFrame.Height();
+			if (fDragEdges & kEdgeRight)
+				width = std::min(std::max(width + by.x, minWidth), maxWidth);
+			if (fDragEdges & kEdgeBottom)
+				height = std::min(std::max(height + by.y, minHeight), maxHeight);
+			Window()->ResizeTo(width, height);
+			return;
+		}
+		if (fFrameless) {
+			// The cursor tells of the edges that resize the window.
+			int edges = transit == B_EXITED_VIEW ? 0 : EdgesAt(where);
+			if (edges != fEdgesUnder) {
+				fEdgesUnder = edges;
+				if (edges == 0) {
+					ApplyCursor();
+				} else {
+					BCursor cursor(edges == kEdgeRight ? B_CURSOR_ID_RESIZE_EAST_WEST
+						: edges == kEdgeBottom ? B_CURSOR_ID_RESIZE_NORTH_SOUTH : B_CURSOR_ID_RESIZE_NORTH_WEST_SOUTH_EAST);
+					SetViewCursor(&cursor);
+				}
+			}
+			if (edges != 0)
+				return;
+		}
 		if (drag != NULL && drag->HasRef("refs")) {
 			DragFiles(where, transit, drag);
 			return;
@@ -275,7 +337,51 @@ public:
 		ApplyCursor();
 	}
 
+	// fFrameless is whether the window has no frame of the system's and is
+	// not fullscreen: the view then moves and resizes it. The window sets
+	// it, locked.
+	bool fFrameless = false;
+
 private:
+	enum { kDragNone = 0, kDragMove, kDragResize };
+	enum { kEdgeRight = 1, kEdgeBottom = 2 };
+
+	// EdgesAt tells which edges that resize the window a point of the
+	// view is on: the right and the bottom ones, and both in the corner,
+	// where Haiku's windows are resized. A window with the system's frame
+	// has none here.
+	int EdgesAt(BPoint where) {
+		if (!fFrameless)
+			return 0;
+		const float kEdge = 5, kCorner = 14;
+		BRect b = Bounds();
+		bool right = where.x >= b.right - kEdge, bottom = where.y >= b.bottom - kEdge;
+		if ((right && where.y >= b.bottom - kCorner) || (bottom && where.x >= b.right - kCorner))
+			return kEdgeRight | kEdgeBottom;
+		return (right ? kEdgeRight : 0) | (bottom ? kEdgeBottom : 0);
+	}
+
+	// ScreenWhere is a point of the view's message on the screen, which
+	// does not move with the window as the view's own points do.
+	BPoint ScreenWhere(BPoint where) {
+		BPoint screen;
+		BMessage *msg = Window()->CurrentMessage();
+		if (msg != NULL && msg->FindPoint("screen_where", &screen) == B_OK)
+			return screen;
+		return ConvertToScreen(where);
+	}
+
+	// What a press on a window without the system's frame began: a move or
+	// a resize of it, from where the pointer and the window were.
+	int fDrag = kDragNone;
+	int fDragEdges = 0;
+	BPoint fDragFrom;
+	BRect fDragFrame;
+	// fEdgesUnder are the resizing edges the pointer is over.
+	int fEdgesUnder = 0;
+	// fLastScreen is where the pointer's last event was, on the screen.
+	BPoint fLastScreen;
+
 	gh_event PointerEvent(int32 type, BPoint where) {
 		gh_event ev = NewEvent(type);
 		ev.fx = where.x;
@@ -290,6 +396,7 @@ private:
 				ev.when = when;
 		}
 		fButtons = (uint32)buttons;
+		fLastScreen = ScreenWhere(where);
 		ev.buttons = fButtons;
 		ev.modifiers = (uint32)mods;
 		return ev;
@@ -402,6 +509,9 @@ private:
 	std::string fPaths;
 };
 
+// The attribute of the desktop's directory Tracker keeps the wallpapers in.
+const char *const kBackgroundAttr = "be:bgndimginfo";
+
 class GioWindow : public BWindow {
 public:
 	GioWindow(BRect frame, const char *title, bool decorated)
@@ -419,9 +529,20 @@ public:
 		RemoveShortcut('A', B_COMMAND_KEY);
 		fView = new GioView(Bounds(), &fQueue, &fFrame);
 		AddChild(fView);
+		fDecorated = decorated;
+		fView->fFrameless = !decorated;
+		// The wallpaper is an attribute of the desktop's directory, which
+		// Backgrounds writes: a change of it is told to the program.
+		BPath desktop;
+		BNode node;
+		node_ref ref;
+		if (find_directory(B_DESKTOP_DIRECTORY, &desktop) == B_OK && node.SetTo(desktop.Path()) == B_OK
+			&& node.GetNodeRef(&ref) == B_OK)
+			watch_node(&ref, B_WATCH_ATTR, this);
 	}
 
 	~GioWindow() {
+		stop_watching(this);
 		if (fContext != NULL)
 			OSMesaDestroyContext(fContext);
 		free(fBuffer);
@@ -434,7 +555,35 @@ public:
 			fView->ShowFrame();
 			return;
 		}
+		if (msg->what == B_NODE_MONITOR) {
+			int32 opcode = 0;
+			const char *attr = NULL;
+			if (msg->FindInt32("opcode", &opcode) == B_OK && opcode == B_ATTR_CHANGED
+				&& msg->FindString("attr", &attr) == B_OK && strcmp(attr, kBackgroundAttr) == 0)
+				fQueue.Push(NewEvent(GH_EV_DESKTOP));
+			return;
+		}
 		BWindow::MessageReceived(msg);
+	}
+
+	void FrameMoved(BPoint origin) override {
+		BWindow::FrameMoved(origin);
+		gh_event ev = NewEvent(GH_EV_MOVE);
+		ev.x = (int32)origin.x;
+		ev.y = (int32)origin.y;
+		fQueue.Push(ev);
+	}
+
+	// Each workspace has a wallpaper of its own.
+	void WorkspaceActivated(int32 workspace, bool active) override {
+		BWindow::WorkspaceActivated(workspace, active);
+		if (active)
+			fQueue.Push(NewEvent(GH_EV_DESKTOP));
+	}
+
+	void ScreenChanged(BRect frame, color_space mode) override {
+		BWindow::ScreenChanged(frame, mode);
+		fQueue.Push(NewEvent(GH_EV_DESKTOP));
 	}
 
 	bool QuitRequested() override {
@@ -488,6 +637,9 @@ public:
 	BRect fRestore;
 	bool fFullscreen = false;
 	BRect fWindowed;
+	// fDecorated is whether the window has the system's frame when it is
+	// not fullscreen.
+	bool fDecorated = true;
 };
 
 // The arguments of launches by message (GioApp::ArgvReceived).
@@ -850,6 +1002,62 @@ void gh_window_size(void *w, int32_t *width, int32_t *height) {
 	});
 }
 
+void gh_window_origin(void *w, int32_t *x, int32_t *y) {
+	*x = 0;
+	*y = 0;
+	Locked(w, [&](GioWindow *win) {
+		BPoint origin = win->Frame().LeftTop();
+		*x = (int32_t)origin.x;
+		*y = (int32_t)origin.y;
+	});
+}
+
+void gh_window_desktop(void *w, gh_desktop *desktop) {
+	memset(desktop, 0, sizeof(*desktop));
+	int32 workspace = current_workspace();
+	{
+		BScreen screen(B_MAIN_SCREEN_ID);
+		BRect frame = screen.Frame();
+		desktop->width = frame.IntegerWidth() + 1;
+		desktop->height = frame.IntegerHeight() + 1;
+		rgb_color color = screen.DesktopColor(workspace);
+		desktop->red = color.red;
+		desktop->green = color.green;
+		desktop->blue = color.blue;
+	}
+	BPath path;
+	if (find_directory(B_DESKTOP_DIRECTORY, &path) != B_OK)
+		return;
+	BNode node(path.Path());
+	attr_info info;
+	if (node.GetAttrInfo(kBackgroundAttr, &info) != B_OK || info.size <= 0 || info.size > (1 << 20))
+		return;
+	std::string flat((size_t)info.size, 0);
+	if (node.ReadAttr(kBackgroundAttr, info.type, 0, &flat[0], (size_t)info.size) != (ssize_t)info.size)
+		return;
+	BMessage msg;
+	if (msg.Unflatten(flat.data()) != B_OK)
+		return;
+	// A set of workspaces each: the first that has this one, as Tracker
+	// takes it.
+	int32 workspaces = 0;
+	for (int32 i = 0; msg.FindInt32("be:bgndimginfoworkspaces", i, &workspaces) == B_OK; i++) {
+		if ((workspaces & (1 << workspace)) == 0)
+			continue;
+		const char *file = NULL;
+		int32 mode = GH_WALLPAPER_AT;
+		BPoint offset(0, 0);
+		msg.FindInt32("be:bgndimginfomode", i, &mode);
+		msg.FindPoint("be:bgndimginfooffset", i, &offset);
+		if (msg.FindString("be:bgndimginfopath", i, &file) == B_OK && file != NULL)
+			strlcpy(desktop->path, file, sizeof(desktop->path));
+		desktop->mode = mode;
+		desktop->x = (int32_t)offset.x;
+		desktop->y = (int32_t)offset.y;
+		return;
+	}
+}
+
 void gh_window_set_title(void *w, const char *title) {
 	Locked(w, [&](GioWindow *win) { win->SetTitle(title); });
 }
@@ -867,13 +1075,55 @@ void gh_window_set_limits(void *w, int32_t minw, int32_t minh, int32_t maxw, int
 }
 
 void gh_window_set_decorated(void *w, int32_t decorated) {
-	Locked(w, [&](GioWindow *win) { win->SetLook(decorated ? B_TITLED_WINDOW_LOOK : B_NO_BORDER_WINDOW_LOOK); });
+	Locked(w, [&](GioWindow *win) {
+		bool was = win->fDecorated;
+		win->fDecorated = decorated != 0;
+		if (win->fFullscreen)
+			return;
+		// A window is its content to Haiku, and the system's frame, the
+		// tab and the border, is around it: the look alone left the
+		// content where it was, and what the user sees as the window
+		// jumped, smaller by the frame without it, and its content, with
+		// the program's own frame now inside, shorter by that. The window
+		// stays where the user sees it instead: its content takes the place
+		// of the system's frame when that goes, and gives it back when it
+		// comes.
+		if (was && !win->fDecorated) {
+			BRect outer = win->DecoratorFrame();
+			win->SetLook(B_NO_BORDER_WINDOW_LOOK);
+			win->MoveTo(outer.LeftTop());
+			win->ResizeTo(outer.Width(), outer.Height());
+		} else if (!was && win->fDecorated) {
+			BRect outer = win->Frame();
+			win->SetLook(B_TITLED_WINDOW_LOOK);
+			BRect inner = win->Frame(), around = win->DecoratorFrame();
+			inner.left = outer.left + (inner.left - around.left);
+			inner.top = outer.top + (inner.top - around.top);
+			inner.right = outer.right - (around.right - inner.right);
+			inner.bottom = outer.bottom - (around.bottom - inner.bottom);
+			if (inner.IsValid()) {
+				win->MoveTo(inner.LeftTop());
+				win->ResizeTo(inner.Width(), inner.Height());
+			}
+		} else {
+			win->SetLook(decorated ? B_TITLED_WINDOW_LOOK : B_NO_BORDER_WINDOW_LOOK);
+		}
+		win->fView->fFrameless = !win->fDecorated;
+	});
+}
+
+void gh_window_start_move(void *w) {
+	Locked(w, [&](GioWindow *win) {
+		if (!win->fFullscreen)
+			win->fView->BeginMove();
+	});
 }
 
 void gh_window_set_mode(void *w, int32_t mode) {
 	Locked(w, [&](GioWindow *win) {
 		if (mode != GH_MODE_FULLSCREEN && win->fFullscreen) {
-			win->SetLook(B_TITLED_WINDOW_LOOK);
+			win->SetLook(win->fDecorated ? B_TITLED_WINDOW_LOOK : B_NO_BORDER_WINDOW_LOOK);
+			win->fView->fFrameless = !win->fDecorated;
 			win->MoveTo(win->fWindowed.LeftTop());
 			win->ResizeTo(win->fWindowed.Width(), win->fWindowed.Height());
 			win->fFullscreen = false;
@@ -894,6 +1144,7 @@ void gh_window_set_mode(void *w, int32_t mode) {
 			win->fWindowed = win->Frame();
 			BRect screen = BScreen(win).Frame();
 			win->SetLook(B_NO_BORDER_WINDOW_LOOK);
+			win->fView->fFrameless = false;
 			win->MoveTo(screen.LeftTop());
 			win->ResizeTo(screen.Width(), screen.Height());
 			win->fFullscreen = true;

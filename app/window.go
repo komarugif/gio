@@ -130,6 +130,18 @@ type eventSummary struct {
 	destroy      *DestroyEvent
 	// drops wait in order; moves one after another are one.
 	drops []DropEvent
+	// passed are a driver's own events, in order, the last of each kind
+	// one after another.
+	passed []passedEvent
+}
+
+// passedEvent is an event of a driver that the window gives the program as
+// it is, such as Haiku's of the window's place. One after another of its
+// kind replaces it: the program needs the last.
+type passedEvent interface {
+	event.Event
+	// passedKind names the kind of the event.
+	passedKind() string
 }
 
 type callbacks struct {
@@ -630,6 +642,13 @@ func (w *Window) nextEvent() (event.Event, bool) {
 			s.drops = nil
 		}
 		return e, true
+	case len(s.passed) > 0:
+		e := s.passed[0]
+		s.passed = s.passed[1:]
+		if len(s.passed) == 0 {
+			s.passed = nil
+		}
+		return e, true
 	case s.frame != nil:
 		e := *s.frame
 		s.frame = nil
@@ -696,6 +715,13 @@ func (w *Window) processEvent(e event.Event) bool {
 			<-q
 		}
 		w.coalesced.destroy = &e2
+	case passedEvent:
+		p := w.coalesced.passed
+		if n := len(p); n > 0 && p[n-1].passedKind() == e2.passedKind() {
+			p[n-1] = e2
+		} else {
+			w.coalesced.passed = append(p, e2)
+		}
 	case ViewEvent:
 		if !e2.Valid() && w.gpu != nil {
 			w.ctx.Lock()

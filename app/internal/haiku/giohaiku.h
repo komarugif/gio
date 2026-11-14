@@ -20,7 +20,7 @@ extern "C" {
 
 // GH_ABI changes whenever this interface does; gh_abi returns it, and Gio
 // refuses a library of another version.
-#define GH_ABI 5
+#define GH_ABI 7
 
 enum {
 	GH_EV_NONE = 0,
@@ -41,6 +41,8 @@ enum {
 	GH_EV_MODIFIERS,    // modifiers changed
 	GH_EV_INPUT_METHOD, // text: the composed string; x: 1 when confirmed
 	GH_EV_DROP,         // files dragged over the content: x: a GH_DROP_*; fx, fy
+	GH_EV_MOVE,         // x, y: where the content is on the screen, in pixels
+	GH_EV_DESKTOP,      // what the desktop shows may be another: gh_window_desktop
 };
 
 // The stages of a drag of files, GH_EV_DROP's x. The files are
@@ -64,6 +66,22 @@ typedef struct {
 	int64_t when; // system_time(), in microseconds
 	char text[64];
 } gh_event;
+
+// How a wallpaper is placed, gh_desktop's mode: Tracker's values.
+enum {
+	GH_WALLPAPER_AT = 0, // at x, y, at its own size
+	GH_WALLPAPER_CENTERED,
+	GH_WALLPAPER_SCALED, // stretched over the screen
+	GH_WALLPAPER_TILED,
+};
+
+typedef struct {
+	int32_t width, height; // the screen's size, in pixels
+	int32_t mode;          // a GH_WALLPAPER_*
+	int32_t x, y;
+	uint8_t red, green, blue; // the desktop's color
+	char path[1024];          // the wallpaper's file, empty when there is none
+} gh_desktop;
 
 enum {
 	GH_CURSOR_DEFAULT = 0,
@@ -128,10 +146,21 @@ int32_t gh_window_next_event(void *w, gh_event *ev, int64_t timeout);
 void gh_window_wake(void *w);
 
 void gh_window_size(void *w, int32_t *width, int32_t *height);
+// gh_window_origin tells where the content is on the screen, in pixels.
+void gh_window_origin(void *w, int32_t *x, int32_t *y);
+// gh_window_desktop tells what the desktop shows behind the windows of the
+// current workspace: the wallpaper Tracker draws there (the be:bgndimginfo
+// attribute of the desktop's directory) and the color under it.
+void gh_window_desktop(void *w, gh_desktop *desktop);
 void gh_window_set_title(void *w, const char *title);
 void gh_window_set_size(void *w, int32_t width, int32_t height);
 void gh_window_set_limits(void *w, int32_t minw, int32_t minh, int32_t maxw, int32_t maxh);
 void gh_window_set_decorated(void *w, int32_t decorated);
+// gh_window_start_move has the window follow the pointer until its button
+// is released, as a window does when moved by its tab: for a window
+// without the system's frame, when a press is on what moves it. It does
+// nothing when no button is held any more.
+void gh_window_start_move(void *w);
 void gh_window_set_mode(void *w, int32_t mode);
 void gh_window_center(void *w);
 void gh_window_raise(void *w);
